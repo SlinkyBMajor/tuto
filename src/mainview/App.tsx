@@ -1,4 +1,5 @@
 import {
+	ArrowRight01Icon,
 	CompassIcon,
 	Plant01Icon,
 	RocketIcon,
@@ -17,9 +18,15 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DEMO_CARDS } from "@/lib/demo";
+import { DEMO_CARDS, DEMO_OUTLINE } from "@/lib/demo";
 import { bun } from "@/lib/rpc";
-import type { Card, CardOption, TurnResult } from "../shared/types";
+import { cn } from "@/lib/utils";
+import type {
+	Card,
+	CardOption,
+	OutlineItem,
+	TurnResult,
+} from "../shared/types";
 
 const demoMode = new URLSearchParams(window.location.search).has("demo");
 
@@ -52,6 +59,12 @@ export default function App() {
 	const [loading, setLoading] = useState(false);
 	const [started, setStarted] = useState(demoMode);
 	const [input, setInput] = useState("");
+	const [outline, setOutline] = useState<OutlineItem[] | null>(
+		demoMode ? DEMO_OUTLINE : null,
+	);
+	const [currentConceptId, setCurrentConceptId] = useState<string | null>(
+		demoMode ? (DEMO_OUTLINE[1]?.id ?? null) : null,
+	);
 	// Keyboard reading position: which segment of which card is highlighted
 	const [highlight, setHighlight] = useState<{
 		itemId: number;
@@ -63,6 +76,7 @@ export default function App() {
 	// default scroll-to-bottom
 	const keyboardFlowRef = useRef(false);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: items/loading are intentional triggers — scroll to bottom whenever the feed grows or the skeleton appears
 	useEffect(() => {
 		if (keyboardFlowRef.current) return;
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -91,6 +105,8 @@ export default function App() {
 		try {
 			const result = await request;
 			if (result.ok) {
+				if (result.outline) setOutline(result.outline);
+				if (result.card.conceptId) setCurrentConceptId(result.card.conceptId);
 				append({ kind: "card", card: result.card }, options);
 			} else {
 				append({ kind: "error", text: result.error });
@@ -105,11 +121,13 @@ export default function App() {
 		}
 	}
 
-	function startLesson() {
-		const topic = input.trim();
+	function startLesson(topicArg?: string) {
+		const topic = (topicArg ?? input).trim();
 		if (!topic || loading) return;
 		setStarted(true);
 		setInput("");
+		setOutline(null);
+		setCurrentConceptId(null);
 		append({ kind: "user", text: topic });
 		void runTurn(bun.startLesson({ topic }));
 	}
@@ -188,6 +206,7 @@ export default function App() {
 				setHighlight({ itemId: lastCard.id, index: highlight.index + 1 });
 			} else if (
 				!loading &&
+				lastCard.card?.type !== "recap" &&
 				!(lastCard.card?.type === "question" && !lastCard.selectedOption)
 			) {
 				// Past the last section: advance the lesson (unanswered question
@@ -238,9 +257,48 @@ export default function App() {
 		);
 	}
 
+	const currentIndex = outline
+		? outline.findIndex((item) => item.id === currentConceptId)
+		: -1;
+	const lessonEnded =
+		items.findLast((item) => item.kind === "card")?.card?.type === "recap";
+
+	function newLesson() {
+		setItems([]);
+		setOutline(null);
+		setCurrentConceptId(null);
+		setHighlight(null);
+		setStarted(false);
+	}
+
 	return (
 		<main className="mx-auto flex min-h-screen w-full max-w-[50rem] flex-col p-6">
 			<SettingsButton />
+			{outline && (
+				<div className="sticky top-0 z-10 -mx-6 mb-2 border-b bg-background/95 px-6 py-3 backdrop-blur">
+					<div className="mx-auto flex w-full max-w-[50rem] items-center gap-3 pr-14">
+						<div className="flex shrink-0 items-center gap-1.5">
+							{outline.map((item, index) => (
+								<span
+									key={item.id}
+									title={item.title}
+									className={cn(
+										"size-2.5 rounded-full transition-colors",
+										index < currentIndex && "bg-primary/40",
+										index === currentIndex && "bg-primary",
+										index > currentIndex && "border border-muted-foreground/40",
+									)}
+								/>
+							))}
+						</div>
+						<span className="truncate text-sm text-muted-foreground">
+							{currentIndex >= 0
+								? `${outline[currentIndex]?.title} — ${currentIndex + 1} of ${outline.length}`
+								: `${outline.length} concepts`}
+						</span>
+					</div>
+				</div>
+			)}
 			<div className="flex-1 space-y-5 pb-40">
 				{items.map((item) => {
 					if (item.kind === "user") {
@@ -268,11 +326,15 @@ export default function App() {
 						);
 					}
 					const options = item.card?.options;
+					const suggestions = item.card?.suggestions;
 					return (
 						<UICard
 							key={item.id}
 							data-item-id={item.id}
-							className="rounded-3xl shadow-sm"
+							className={cn(
+								"rounded-3xl shadow-sm",
+								item.card?.type === "recap" && "border-primary/40",
+							)}
 						>
 							<CardHeader>
 								<CardTitle className="text-2xl">{item.card?.title}</CardTitle>
@@ -280,6 +342,29 @@ export default function App() {
 							<CardContent className="prose prose-lg max-w-none dark:prose-invert">
 								<CardMarkdown body={item.card?.body ?? ""} />
 							</CardContent>
+							{suggestions && suggestions.length > 0 && (
+								<CardContent className="flex flex-col gap-3">
+									<p className="text-sm text-muted-foreground">
+										Keep learning:
+									</p>
+									{suggestions.map((topic) => (
+										<Button
+											key={topic}
+											type="button"
+											variant="outline"
+											className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
+											disabled={loading}
+											onClick={() => startLesson(topic)}
+										>
+											<HugeiconsIcon
+												icon={ArrowRight01Icon}
+												className="size-5 shrink-0"
+											/>
+											<span className="text-base font-semibold">{topic}</span>
+										</Button>
+									))}
+								</CardContent>
+							)}
 							{options && (
 								<CardContent className="flex flex-col gap-3">
 									{options.map((option) => {
@@ -364,6 +449,15 @@ export default function App() {
 							disabled={loading}
 						>
 							Send
+						</Button>
+					) : lessonEnded ? (
+						<Button
+							type="button"
+							className="h-12 rounded-2xl px-6"
+							disabled={loading}
+							onClick={newLesson}
+						>
+							New lesson
 						</Button>
 					) : (
 						<Button

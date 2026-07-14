@@ -15,9 +15,22 @@ const choice = first.card.options[1];
 console.log(`\nTurn 2: answering with option "${choice?.label}"…`);
 const second = await runTutorTurn(choice?.label ?? "", first.sessionId);
 console.log(JSON.stringify(second.card, null, 2));
+console.log("outline:", JSON.stringify(second.outline));
 
 if (second.card.type !== "step") {
 	console.error("FAIL: expected a step card after answering the level");
+	process.exit(1);
+}
+if (!second.outline || second.outline.length < 4) {
+	console.error("FAIL: expected an outline of at least 4 concepts");
+	process.exit(1);
+}
+if (!second.card.conceptId) {
+	console.error("FAIL: expected the step card to carry a conceptId");
+	process.exit(1);
+}
+if (!second.outline.some((item) => item.id === second.card.conceptId)) {
+	console.error("FAIL: step conceptId does not match any outline item");
 	process.exit(1);
 }
 

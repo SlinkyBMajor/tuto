@@ -1,6 +1,6 @@
 import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
 import tutorPrompt from "../../prompts/tutor.md";
-import type { Card } from "../shared/types";
+import type { Card, OutlineItem } from "../shared/types";
 
 const TURN_TIMEOUT_MS = 180_000;
 
@@ -45,6 +45,7 @@ async function runClaude(args: string[]): Promise<ClaudeResult> {
 
 export interface TutorTurn {
 	card: Card;
+	outline?: OutlineItem[];
 	sessionId: string;
 }
 
@@ -73,7 +74,8 @@ export async function runTutorTurn(
 	args.push(userMessage);
 
 	const turn = await runClaude(args);
-	return { card: parseCard(turn.result), sessionId: turn.sessionId };
+	const reply = parseReply(turn.result);
+	return { ...reply, sessionId: turn.sessionId };
 }
 
 // Stateless one-shot repair of a Mermaid diagram that failed to parse.
@@ -101,7 +103,7 @@ export async function fixMermaidDiagram(
 
 // The tutor is instructed to reply with bare JSON, but models occasionally
 // wrap it in code fences or stray prose — extract the outermost object.
-function parseCard(text: string): Card {
+function parseReply(text: string): { card: Card; outline?: OutlineItem[] } {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
 	if (start === -1 || end <= start) {
@@ -113,7 +115,9 @@ function parseCard(text: string): Card {
 	const card = parsed.card;
 	if (
 		!card ||
-		(card.type !== "step" && card.type !== "question") ||
+		(card.type !== "step" &&
+			card.type !== "question" &&
+			card.type !== "recap") ||
 		typeof card.title !== "string" ||
 		typeof card.body !== "string"
 	) {
@@ -122,11 +126,35 @@ function parseCard(text: string): Card {
 		);
 	}
 	return {
-		type: card.type,
-		title: card.title,
-		body: card.body,
-		options: parseOptions(card.options),
+		card: {
+			type: card.type,
+			title: card.title,
+			body: card.body,
+			conceptId:
+				typeof card.conceptId === "string" ? card.conceptId : undefined,
+			options: parseOptions(card.options),
+			suggestions: parseSuggestions(card.suggestions),
+		},
+		outline: parseOutline(parsed.outline),
 	};
+}
+
+function parseOutline(raw: unknown): OutlineItem[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const items = raw.filter(
+		(item): item is { id: string; title: string } =>
+			typeof item?.id === "string" && typeof item?.title === "string",
+	);
+	if (items.length === 0) return undefined;
+	return items.map((item) => ({ id: item.id, title: item.title }));
+}
+
+function parseSuggestions(raw: unknown): string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const suggestions = raw.filter(
+		(topic): topic is string => typeof topic === "string",
+	);
+	return suggestions.length > 0 ? suggestions : undefined;
 }
 
 function parseOptions(raw: unknown): Card["options"] {

@@ -1,6 +1,6 @@
 import type { RPCSchema } from "electrobun/view";
 
-export type CardType = "step" | "question";
+export type CardType = "step" | "question" | "recap";
 
 // Fixed ids so the UI can map icons deterministically; labels stay model-authored
 export type LevelId = "beginner" | "intermediate" | "advanced";
@@ -11,15 +11,26 @@ export interface CardOption {
 	description?: string;
 }
 
+// The tutor's plan for the lesson; ids are stable across revisions so
+// progress, exercises, and notes can key off them
+export interface OutlineItem {
+	id: string;
+	title: string;
+}
+
 export interface Card {
 	type: CardType;
 	title: string;
 	body: string;
+	// Which outline concept a step card belongs to
+	conceptId?: string;
 	options?: CardOption[];
+	// Recap cards: follow-on topics that can seed a new lesson
+	suggestions?: string[];
 }
 
 export type TurnResult =
-	| { ok: true; card: Card }
+	| { ok: true; card: Card; outline?: OutlineItem[] }
 	| { ok: false; error: string };
 
 export type MermaidFixResult =

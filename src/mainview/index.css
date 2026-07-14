@@ -190,8 +190,19 @@ html.font-xlarge {
 }
 
 .segment-active {
-	/* 4px reading-position bar to the left of the section */
-	box-shadow: -14px 0 0 -10px var(--primary);
+	position: relative;
+}
+
+/* 4px reading-position bar, held a clear gap away from the text */
+.segment-active::before {
+	content: "";
+	position: absolute;
+	left: -1.1rem;
+	top: 0.2em;
+	bottom: 0.2em;
+	width: 4px;
+	border-radius: 2px;
+	background: var(--primary);
 }
 
 p[data-segment].segment-active,

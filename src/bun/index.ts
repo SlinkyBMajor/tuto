@@ -41,11 +41,11 @@ function startPrefetch() {
 function finishTurn(turn: TutorTurn): TurnResult {
 	lessonSessionId = turn.sessionId;
 	// Only step cards lead to "continue" — after a question card the next
-	// input is an answer, so a prefetched continue would be wasted
+	// input is an answer, and a recap ends the lesson
 	if (turn.card.type === "step") {
 		startPrefetch();
 	}
-	return { ok: true, card: turn.card };
+	return { ok: true, card: turn.card, outline: turn.outline };
 }
 
 function turnError(error: unknown): TurnResult {
