@@ -1,0 +1,6 @@
+savePrefix: ""
+onlyBuiltDependencies:
+  - electrobun
+  - esbuild
+  - "@biomejs/biome"
+  - "@tailwindcss/oxide"

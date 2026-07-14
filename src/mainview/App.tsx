@@ -1,0 +1,382 @@
+import {
+	CompassIcon,
+	Plant01Icon,
+	RocketIcon,
+	Tick02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { useEffect, useRef, useState } from "react";
+import { CardMarkdown } from "@/components/card-markdown";
+import { SettingsButton } from "@/components/settings";
+import { Button } from "@/components/ui/button";
+import {
+	CardContent,
+	CardHeader,
+	CardTitle,
+	Card as UICard,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DEMO_CARDS } from "@/lib/demo";
+import { bun } from "@/lib/rpc";
+import type { Card, CardOption, TurnResult } from "../shared/types";
+
+const demoMode = new URLSearchParams(window.location.search).has("demo");
+
+const OPTION_ICONS: Record<string, IconSvgElement> = {
+	beginner: Plant01Icon,
+	intermediate: CompassIcon,
+	advanced: RocketIcon,
+};
+
+interface FeedItem {
+	id: number;
+	kind: "card" | "user" | "error";
+	card?: Card;
+	text?: string;
+	selectedOption?: string;
+}
+
+let nextId = 0;
+
+export default function App() {
+	const [items, setItems] = useState<FeedItem[]>(() =>
+		demoMode
+			? DEMO_CARDS.map((card) => ({
+					id: nextId++,
+					kind: "card" as const,
+					card,
+				}))
+			: [],
+	);
+	const [loading, setLoading] = useState(false);
+	const [started, setStarted] = useState(demoMode);
+	const [input, setInput] = useState("");
+	// Keyboard reading position: which segment of which card is highlighted
+	const [highlight, setHighlight] = useState<{
+		itemId: number;
+		index: number;
+	} | null>(null);
+	const bottomRef = useRef<HTMLDivElement>(null);
+	// True while the newest card was requested via keyboard reading — its
+	// first section gets highlighted and positions the view instead of the
+	// default scroll-to-bottom
+	const keyboardFlowRef = useRef(false);
+
+	useEffect(() => {
+		if (keyboardFlowRef.current) return;
+		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+	}, [items, loading]);
+
+	function append(
+		item: Omit<FeedItem, "id">,
+		options: { highlightNew?: boolean } = {},
+	) {
+		const id = nextId++;
+		setItems((prev) => [...prev, { ...item, id }]);
+		if (options.highlightNew && item.kind === "card") {
+			keyboardFlowRef.current = true;
+			setHighlight({ itemId: id, index: 0 });
+		} else {
+			keyboardFlowRef.current = false;
+			setHighlight(null);
+		}
+	}
+
+	async function runTurn(
+		request: Promise<TurnResult>,
+		options: { highlightNew?: boolean } = {},
+	) {
+		setLoading(true);
+		try {
+			const result = await request;
+			if (result.ok) {
+				append({ kind: "card", card: result.card }, options);
+			} else {
+				append({ kind: "error", text: result.error });
+			}
+		} catch (error) {
+			append({
+				kind: "error",
+				text: error instanceof Error ? error.message : String(error),
+			});
+		} finally {
+			setLoading(false);
+		}
+	}
+
+	function startLesson() {
+		const topic = input.trim();
+		if (!topic || loading) return;
+		setStarted(true);
+		setInput("");
+		append({ kind: "user", text: topic });
+		void runTurn(bun.startLesson({ topic }));
+	}
+
+	function sendMessage() {
+		const text = input.trim();
+		if (!text || loading) return;
+		setInput("");
+		append({ kind: "user", text });
+		void runTurn(bun.sendMessage({ text }));
+	}
+
+	function continueLesson(options: { highlightNew?: boolean } = {}) {
+		if (loading) return;
+		void runTurn(bun.continueLesson({}), options);
+	}
+
+	function chooseOption(itemId: number, option: CardOption) {
+		if (loading) return;
+		setItems((prev) =>
+			prev.map((item) =>
+				item.id === itemId ? { ...item, selectedOption: option.id } : item,
+			),
+		);
+		void runTurn(bun.sendMessage({ text: option.label }));
+	}
+
+	// Apply the highlight class to the active segment in the DOM. Segments are
+	// queried rather than tracked in React state so markdown internals stay
+	// presentation-only.
+	useEffect(() => {
+		for (const el of document.querySelectorAll(".segment-active")) {
+			el.classList.remove("segment-active");
+		}
+		if (!highlight) return;
+		const card = document.querySelector(`[data-item-id="${highlight.itemId}"]`);
+		const segment = card?.querySelectorAll("[data-segment]")[highlight.index];
+		if (segment) {
+			segment.classList.add("segment-active");
+			segment.scrollIntoView({ behavior: "smooth", block: "center" });
+		}
+	}, [highlight]);
+
+	// ArrowDown steps through the latest card section by section; past the
+	// last one it acts as Continue. ArrowUp steps back.
+	useEffect(() => {
+		function onKeyDown(event: KeyboardEvent) {
+			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+			const target = event.target as HTMLElement | null;
+			if (
+				target?.closest("textarea, select, [contenteditable=true]") ||
+				(target instanceof HTMLInputElement && target.value !== "")
+			) {
+				return;
+			}
+			const lastCard = items.findLast((item) => item.kind === "card");
+			if (!lastCard) return;
+			event.preventDefault();
+
+			const cardEl = document.querySelector(`[data-item-id="${lastCard.id}"]`);
+			const count = cardEl?.querySelectorAll("[data-segment]").length ?? 0;
+			if (count === 0) return;
+
+			if (event.key === "ArrowUp") {
+				if (highlight?.itemId === lastCard.id && highlight.index > 0) {
+					setHighlight({ itemId: lastCard.id, index: highlight.index - 1 });
+				} else {
+					setHighlight(null);
+				}
+				return;
+			}
+
+			if (highlight?.itemId !== lastCard.id) {
+				setHighlight({ itemId: lastCard.id, index: 0 });
+			} else if (highlight.index + 1 < count) {
+				setHighlight({ itemId: lastCard.id, index: highlight.index + 1 });
+			} else if (
+				!loading &&
+				!(lastCard.card?.type === "question" && !lastCard.selectedOption)
+			) {
+				// Past the last section: advance the lesson (unanswered question
+				// cards want an answer, not a continue). The highlight stays on
+				// the current section while the next card loads, then moves to
+				// the new card's first section.
+				continueLesson({ highlightNew: true });
+			}
+		}
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	});
+
+	if (!started) {
+		return (
+			<main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+				<SettingsButton />
+				<div className="text-center">
+					<h1 className="font-heading text-5xl font-bold">Tuto</h1>
+					<p className="mt-3 text-xl text-muted-foreground">
+						What would you like to learn?
+					</p>
+				</div>
+				<form
+					className="flex w-full max-w-xl gap-3"
+					onSubmit={(event) => {
+						event.preventDefault();
+						startLesson();
+					}}
+				>
+					<Input
+						autoFocus
+						value={input}
+						onChange={(event) => setInput(event.target.value)}
+						placeholder="e.g. Kubernetes, from the basics"
+						className="h-14 rounded-2xl px-5 text-lg"
+					/>
+					<Button
+						type="submit"
+						size="lg"
+						className="h-14 rounded-2xl px-8 text-lg"
+						disabled={!input.trim()}
+					>
+						Start
+					</Button>
+				</form>
+			</main>
+		);
+	}
+
+	return (
+		<main className="mx-auto flex min-h-screen w-full max-w-[50rem] flex-col p-6">
+			<SettingsButton />
+			<div className="flex-1 space-y-5 pb-40">
+				{items.map((item) => {
+					if (item.kind === "user") {
+						return (
+							<p
+								key={item.id}
+								className="ml-auto w-fit max-w-md rounded-2xl bg-secondary px-4 py-2 text-secondary-foreground"
+							>
+								{item.text}
+							</p>
+						);
+					}
+					if (item.kind === "error") {
+						return (
+							<UICard key={item.id} className="border-destructive">
+								<CardHeader>
+									<CardTitle className="text-destructive">
+										Something went wrong
+									</CardTitle>
+								</CardHeader>
+								<CardContent className="text-sm text-muted-foreground">
+									{item.text}
+								</CardContent>
+							</UICard>
+						);
+					}
+					const options = item.card?.options;
+					return (
+						<UICard
+							key={item.id}
+							data-item-id={item.id}
+							className="rounded-3xl shadow-sm"
+						>
+							<CardHeader>
+								<CardTitle className="text-2xl">{item.card?.title}</CardTitle>
+							</CardHeader>
+							<CardContent className="prose prose-lg max-w-none dark:prose-invert">
+								<CardMarkdown body={item.card?.body ?? ""} />
+							</CardContent>
+							{options && (
+								<CardContent className="flex flex-col gap-3">
+									{options.map((option) => {
+										const selected = item.selectedOption === option.id;
+										const answered = item.selectedOption !== undefined;
+										return (
+											<Button
+												key={option.id}
+												type="button"
+												variant={selected ? "default" : "outline"}
+												className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
+												disabled={loading || (answered && !selected)}
+												onClick={() => {
+													if (!answered) chooseOption(item.id, option);
+												}}
+											>
+												<HugeiconsIcon
+													icon={
+														selected
+															? Tick02Icon
+															: (OPTION_ICONS[option.id] ?? CompassIcon)
+													}
+													className="size-6 shrink-0"
+												/>
+												<span className="flex flex-col gap-0.5">
+													<span className="text-base font-semibold">
+														{option.label}
+													</span>
+													{option.description && (
+														<span
+															className={
+																selected
+																	? "text-sm text-primary-foreground/80"
+																	: "text-sm text-muted-foreground"
+															}
+														>
+															{option.description}
+														</span>
+													)}
+												</span>
+											</Button>
+										);
+									})}
+								</CardContent>
+							)}
+						</UICard>
+					);
+				})}
+				{loading && (
+					<UICard className="rounded-3xl">
+						<CardHeader>
+							<Skeleton className="h-7 w-2/5" />
+						</CardHeader>
+						<CardContent className="space-y-3">
+							<Skeleton className="h-5 w-full" />
+							<Skeleton className="h-5 w-4/5" />
+						</CardContent>
+					</UICard>
+				)}
+				<div ref={bottomRef} />
+			</div>
+
+			<div className="fixed inset-x-0 bottom-0 border-t bg-background/95 p-4 backdrop-blur">
+				<form
+					className="mx-auto flex w-full max-w-[50rem] gap-3"
+					onSubmit={(event) => {
+						event.preventDefault();
+						sendMessage();
+					}}
+				>
+					<Input
+						value={input}
+						onChange={(event) => setInput(event.target.value)}
+						placeholder="Ask a question…"
+						className="h-12 rounded-2xl px-4"
+						disabled={loading}
+					/>
+					{input.trim() ? (
+						<Button
+							type="submit"
+							className="h-12 rounded-2xl px-6"
+							disabled={loading}
+						>
+							Send
+						</Button>
+					) : (
+						<Button
+							type="button"
+							className="h-12 rounded-2xl px-6"
+							disabled={loading}
+							onClick={() => continueLesson()}
+						>
+							Continue
+						</Button>
+					)}
+				</form>
+			</div>
+		</main>
+	);
+}

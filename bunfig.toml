@@ -1,0 +1,4 @@
+# Lets `bun run` execute src/bun code directly (prompts/*.md import as strings);
+# the electrobun build configures the same loader in electrobun.config.ts.
+[loader]
+".md" = "text"
