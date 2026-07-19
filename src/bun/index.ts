@@ -1,6 +1,20 @@
 import { BrowserView, BrowserWindow, Updater } from "electrobun/bun";
-import type { MermaidFixResult, TurnResult, TutoRPC } from "../shared/types";
-import { fixMermaidDiagram, runTutorTurn, type TutorTurn } from "./claude";
+import type {
+	CheckResult,
+	MermaidFixResult,
+	TurnResult,
+	TutoRPC,
+} from "../shared/types";
+import {
+	checkExerciseAnswer,
+	composeSystemPrompt,
+	fixMermaidDiagram,
+	runTutorTurn,
+	type TutorTurn,
+} from "./claude";
+import { NotesDoc } from "./notes";
+import { makeLessonId } from "./paths";
+import * as store from "./store";
 
 const DEV_SERVER_URL = "http://localhost:5173";
 
@@ -20,8 +34,13 @@ async function getMainViewUrl(): Promise<string> {
 	return "views://mainview/index.html";
 }
 
-// One lesson at a time in the walking skeleton; the session id is the lesson.
+// One lesson active at a time. The Claude session carries the conversation;
+// lessonId/notes/language are the persistence-facing state for save/resume.
+let lessonId: string | undefined;
 let lessonSessionId: string | undefined;
+let lessonLanguage: string | undefined;
+let lessonSystemPrompt = composeSystemPrompt();
+const notes = new NotesDoc();
 
 // Speculative prefetch: after each step card we immediately ask for the next
 // one in a FORKED session. Continue adopts the fork (instant card); any other
@@ -32,7 +51,10 @@ let prefetch:
 
 function startPrefetch() {
 	if (!lessonSessionId) return;
-	const promise = runTutorTurn("continue", lessonSessionId, { fork: true });
+	const promise = runTutorTurn("continue", lessonSessionId, {
+		fork: true,
+		systemPrompt: lessonSystemPrompt,
+	});
 	// Errors are handled at adoption time; this avoids an unhandled rejection
 	promise.catch(() => {});
 	prefetch = { baseSessionId: lessonSessionId, promise };
@@ -40,12 +62,23 @@ function startPrefetch() {
 
 function finishTurn(turn: TutorTurn): TurnResult {
 	lessonSessionId = turn.sessionId;
+	// File the card body into the notes document at adoption time — a
+	// discarded prefetch fork must never write notes
+	if (turn.card.notes) {
+		notes.insert(turn.card.notes.sectionPath, turn.card.body);
+	}
 	// Only step cards lead to "continue" — after a question card the next
 	// input is an answer, and a recap ends the lesson
 	if (turn.card.type === "step") {
 		startPrefetch();
 	}
-	return { ok: true, card: turn.card, outline: turn.outline };
+	return {
+		ok: true,
+		card: turn.card,
+		outline: turn.outline,
+		exercise: turn.exercise,
+		lessonId,
+	};
 }
 
 function turnError(error: unknown): TurnResult {
@@ -58,16 +91,25 @@ function turnError(error: unknown): TurnResult {
 
 async function tutorTurn(
 	message: string,
-	options: { newLesson?: boolean } = {},
+	options: { newLesson?: boolean; language?: string; topic?: string } = {},
 ): Promise<TurnResult> {
 	if (options.newLesson) {
+		const topic = options.topic ?? message;
 		lessonSessionId = undefined;
+		lessonLanguage = options.language;
+		lessonSystemPrompt = composeSystemPrompt(options.language);
+		lessonId = makeLessonId(topic);
+		notes.startLesson(lessonId, topic);
 	}
 	// An explicit user turn advances the base session; a pending fork would
 	// no longer contain this exchange, so drop it
 	prefetch = undefined;
 	try {
-		return finishTurn(await runTutorTurn(message, lessonSessionId));
+		return finishTurn(
+			await runTutorTurn(message, lessonSessionId, {
+				systemPrompt: lessonSystemPrompt,
+			}),
+		);
 	} catch (error) {
 		return turnError(error);
 	}
@@ -90,10 +132,58 @@ const rpc = BrowserView.defineRPC<TutoRPC>({
 	maxRequestTime: 300_000,
 	handlers: {
 		requests: {
-			startLesson: ({ topic }) =>
-				tutorTurn(`I want to learn about: ${topic}`, { newLesson: true }),
+			startLesson: ({ topic, language }) =>
+				tutorTurn(`I want to learn about: ${topic}`, {
+					newLesson: true,
+					language,
+					topic,
+				}),
 			sendMessage: ({ text }) => tutorTurn(text),
 			continueLesson: () => continueTurn(),
+			getNotes: () => ({ markdown: notes.render() }),
+			saveLesson: async ({ snapshot }) => {
+				await store.saveLesson(snapshot, {
+					sessionId: lessonSessionId,
+					language: lessonLanguage,
+				});
+				return { ok: true };
+			},
+			listLessons: async () => ({ lessons: await store.listLessons() }),
+			resumeLesson: async ({ id }) => {
+				const record = await store.loadLesson(id);
+				if (!record) return { ok: false, error: "Lesson not found" };
+				lessonId = record.id;
+				lessonSessionId = record.sessionId;
+				lessonLanguage = record.language;
+				lessonSystemPrompt = composeSystemPrompt(record.language);
+				// A prefetch fork from another lesson must not leak into this one
+				prefetch = undefined;
+				await notes.resume(record.id, record.topic);
+				return { ok: true, record };
+			},
+			deleteLesson: async ({ id }) => {
+				await store.deleteLesson(id);
+				if (lessonId === id) {
+					lessonId = undefined;
+					lessonSessionId = undefined;
+				}
+				return { ok: true };
+			},
+			checkAnswer: async ({ exercise, userAnswer }): Promise<CheckResult> => {
+				try {
+					const graded = await checkExerciseAnswer(exercise, userAnswer);
+					return { ok: true, ...graded };
+				} catch (checkError) {
+					console.error("answer check failed:", checkError);
+					return {
+						ok: false,
+						error:
+							checkError instanceof Error
+								? checkError.message
+								: String(checkError),
+					};
+				}
+			},
 			fixMermaid: async ({ code, error }): Promise<MermaidFixResult> => {
 				try {
 					return { ok: true, code: await fixMermaidDiagram(code, error) };

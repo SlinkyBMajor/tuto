@@ -1,4 +1,5 @@
 import {
+	ArrowLeft01Icon,
 	ArrowRight01Icon,
 	CompassIcon,
 	Plant01Icon,
@@ -8,7 +9,10 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { CardMarkdown } from "@/components/card-markdown";
-import { SettingsButton } from "@/components/settings";
+import { LessonLibrary } from "@/components/home";
+import { NotesPanel } from "@/components/notes";
+import { type PracticeItem, PracticePanel } from "@/components/practice";
+import { loadSettings, SettingsButton } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import {
 	CardContent,
@@ -18,17 +22,30 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DEMO_CARDS, DEMO_OUTLINE } from "@/lib/demo";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	DEMO_CARDS,
+	DEMO_EXERCISES,
+	DEMO_LESSONS,
+	DEMO_NOTES,
+	DEMO_OUTLINE,
+} from "@/lib/demo";
 import { bun } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import type {
 	Card,
 	CardOption,
+	LessonSnapshot,
 	OutlineItem,
+	SavedFeedItem,
+	SavedPracticeItem,
 	TurnResult,
 } from "../shared/types";
 
-const demoMode = new URLSearchParams(window.location.search).has("demo");
+const params = new URLSearchParams(window.location.search);
+const demoMode = params.has("demo");
+// ?demohome renders the home screen with fixture lessons for UI verification
+const homeDemoMode = params.has("demohome");
 
 const OPTION_ICONS: Record<string, IconSvgElement> = {
 	beginner: Plant01Icon,
@@ -65,6 +82,22 @@ export default function App() {
 	const [currentConceptId, setCurrentConceptId] = useState<string | null>(
 		demoMode ? (DEMO_OUTLINE[1]?.id ?? null) : null,
 	);
+	const [tab, setTab] = useState("lesson");
+	const [practice, setPractice] = useState<PracticeItem[]>(() =>
+		demoMode
+			? DEMO_EXERCISES.map((exercise) => ({
+					id: nextId++,
+					exercise,
+					status: "open" as const,
+				}))
+			: [],
+	);
+	// Persistence: the saved-lesson id (from the first turn or a resume) and
+	// the lesson topic, used to build the save snapshot.
+	const [lessonId, setLessonId] = useState<string | null>(null);
+	const [topic, setTopic] = useState("");
+	// Bumped when returning home so the lesson library re-fetches
+	const [homeRefresh, setHomeRefresh] = useState(0);
 	// Keyboard reading position: which segment of which card is highlighted
 	const [highlight, setHighlight] = useState<{
 		itemId: number;
@@ -81,6 +114,38 @@ export default function App() {
 		if (keyboardFlowRef.current) return;
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [items, loading]);
+
+	// Auto-save the lesson snapshot whenever persistable state changes. The
+	// bun process merges session id, language, and timestamps; errors and the
+	// in-flight "checking" status are not persisted.
+	useEffect(() => {
+		if (demoMode || !started || !lessonId) return;
+		const snapshot: LessonSnapshot = {
+			id: lessonId,
+			topic,
+			outline,
+			currentConceptId,
+			feed: items
+				.filter((item) => item.kind !== "error")
+				.map(
+					(item): SavedFeedItem => ({
+						kind: item.kind === "user" ? "user" : "card",
+						card: item.card,
+						text: item.text,
+						selectedOption: item.selectedOption,
+					}),
+				),
+			practice: practice.map(
+				(item): SavedPracticeItem => ({
+					exercise: item.exercise,
+					status: item.status === "checking" ? "open" : item.status,
+					userAnswer: item.userAnswer,
+					explanation: item.explanation,
+				}),
+			),
+		};
+		void bun.saveLesson({ snapshot }).catch(() => {});
+	}, [lessonId, started, topic, outline, currentConceptId, items, practice]);
 
 	function append(
 		item: Omit<FeedItem, "id">,
@@ -105,8 +170,16 @@ export default function App() {
 		try {
 			const result = await request;
 			if (result.ok) {
+				if (result.lessonId) setLessonId(result.lessonId);
 				if (result.outline) setOutline(result.outline);
 				if (result.card.conceptId) setCurrentConceptId(result.card.conceptId);
+				const exercise = result.exercise;
+				if (exercise) {
+					setPractice((prev) => [
+						...prev,
+						{ id: nextId++, exercise, status: "open" },
+					]);
+				}
 				append({ kind: "card", card: result.card }, options);
 			} else {
 				append({ kind: "error", text: result.error });
@@ -122,14 +195,48 @@ export default function App() {
 	}
 
 	function startLesson(topicArg?: string) {
-		const topic = (topicArg ?? input).trim();
-		if (!topic || loading) return;
-		setStarted(true);
-		setInput("");
+		const nextTopic = (topicArg ?? input).trim();
+		if (!nextTopic || loading) return;
+		// Fully reset so a new lesson never inherits the previous one's state
+		setItems([]);
+		setPractice([]);
 		setOutline(null);
 		setCurrentConceptId(null);
-		append({ kind: "user", text: topic });
-		void runTurn(bun.startLesson({ topic }));
+		setHighlight(null);
+		setLessonId(null);
+		setTopic(nextTopic);
+		setInput("");
+		setTab("lesson");
+		setStarted(true);
+		append({ kind: "user", text: nextTopic });
+		void runTurn(
+			bun.startLesson({
+				topic: nextTopic,
+				language: loadSettings().codeLanguage.trim() || undefined,
+			}),
+		);
+	}
+
+	async function resumeLesson(id: string) {
+		if (loading) return;
+		const result = await bun.resumeLesson({ id }).catch(() => null);
+		if (!result?.ok) return;
+		const record = result.record;
+		setItems(record.feed.map((item) => ({ ...item, id: nextId++ })));
+		setPractice(record.practice.map((item) => ({ ...item, id: nextId++ })));
+		setOutline(record.outline);
+		setCurrentConceptId(record.currentConceptId);
+		setLessonId(record.id);
+		setTopic(record.topic);
+		setHighlight(null);
+		setInput("");
+		setTab("lesson");
+		setStarted(true);
+	}
+
+	function goHome() {
+		setStarted(false);
+		setHomeRefresh((n) => n + 1);
 	}
 
 	function sendMessage() {
@@ -175,6 +282,7 @@ export default function App() {
 	// last one it acts as Continue. ArrowUp steps back.
 	useEffect(() => {
 		function onKeyDown(event: KeyboardEvent) {
+			if (tab !== "lesson") return;
 			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
 			const target = event.target as HTMLElement | null;
 			if (
@@ -222,8 +330,8 @@ export default function App() {
 
 	if (!started) {
 		return (
-			<main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
-				<SettingsButton />
+			<main className="flex min-h-screen flex-col items-center justify-center gap-10 p-8">
+				<SettingsButton floating />
 				<div className="text-center">
 					<h1 className="font-heading text-5xl font-bold">Tuto</h1>
 					<p className="mt-3 text-xl text-muted-foreground">
@@ -253,6 +361,11 @@ export default function App() {
 						Start
 					</Button>
 				</form>
+				<LessonLibrary
+					onResume={resumeLesson}
+					refreshKey={homeRefresh}
+					demoLessons={homeDemoMode ? DEMO_LESSONS : undefined}
+				/>
 			</main>
 		);
 	}
@@ -263,214 +376,261 @@ export default function App() {
 	const lessonEnded =
 		items.findLast((item) => item.kind === "card")?.card?.type === "recap";
 
-	function newLesson() {
-		setItems([]);
-		setOutline(null);
-		setCurrentConceptId(null);
-		setHighlight(null);
-		setStarted(false);
+	function updatePractice(id: number, patch: Partial<PracticeItem>) {
+		setPractice((prev) =>
+			prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+		);
 	}
+
+	const openExercises = practice.filter(
+		(item) => item.status === "open",
+	).length;
 
 	return (
 		<main className="mx-auto flex min-h-screen w-full max-w-[50rem] flex-col p-6">
-			<SettingsButton />
-			{outline && (
-				<div className="sticky top-0 z-10 -mx-6 mb-2 border-b bg-background/95 px-6 py-3 backdrop-blur">
-					<div className="mx-auto flex w-full max-w-[50rem] items-center gap-3 pr-14">
-						<div className="flex shrink-0 items-center gap-1.5">
-							{outline.map((item, index) => (
-								<span
-									key={item.id}
-									title={item.title}
-									className={cn(
-										"size-2.5 rounded-full transition-colors",
-										index < currentIndex && "bg-primary/40",
-										index === currentIndex && "bg-primary",
-										index > currentIndex && "border border-muted-foreground/40",
-									)}
-								/>
-							))}
-						</div>
-						<span className="truncate text-sm text-muted-foreground">
-							{currentIndex >= 0
-								? `${outline[currentIndex]?.title} — ${currentIndex + 1} of ${outline.length}`
-								: `${outline.length} concepts`}
-						</span>
+			<Tabs
+				value={tab}
+				onValueChange={(value) => setTab(String(value))}
+				className="flex-1"
+			>
+				<div className="sticky top-0 z-10 -mx-6 mb-2 border-b bg-background/95 px-6 py-2 backdrop-blur">
+					<div className="mx-auto flex w-full max-w-[50rem] items-center gap-3">
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon"
+							className="size-9 shrink-0 rounded-xl"
+							aria-label="Back to lessons"
+							onClick={goHome}
+						>
+							<HugeiconsIcon icon={ArrowLeft01Icon} className="size-5" />
+						</Button>
+						{outline ? (
+							<>
+								<div className="flex shrink-0 items-center gap-1.5">
+									{outline.map((item, index) => (
+										<span
+											key={item.id}
+											title={item.title}
+											className={cn(
+												"size-2.5 rounded-full transition-colors",
+												index < currentIndex && "bg-primary/40",
+												index === currentIndex && "bg-primary",
+												index > currentIndex &&
+													"border border-muted-foreground/40",
+											)}
+										/>
+									))}
+								</div>
+								<span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+									{currentIndex >= 0
+										? `${outline[currentIndex]?.title} — ${currentIndex + 1} of ${outline.length}`
+										: `${outline.length} concepts`}
+								</span>
+							</>
+						) : (
+							<div className="flex-1" />
+						)}
+						<TabsList>
+							<TabsTrigger value="lesson">Lesson</TabsTrigger>
+							<TabsTrigger value="practice">
+								Practice
+								{openExercises > 0 && (
+									<span className="rounded-full bg-primary px-1.5 py-0.5 text-[11px] leading-none text-primary-foreground">
+										{openExercises}
+									</span>
+								)}
+							</TabsTrigger>
+							<TabsTrigger value="notes">Notes</TabsTrigger>
+						</TabsList>
+						<SettingsButton />
 					</div>
 				</div>
-			)}
-			<div className="flex-1 space-y-5 pb-40">
-				{items.map((item) => {
-					if (item.kind === "user") {
-						return (
-							<p
-								key={item.id}
-								className="ml-auto w-fit max-w-md rounded-2xl bg-secondary px-4 py-2 text-secondary-foreground"
-							>
-								{item.text}
-							</p>
-						);
-					}
-					if (item.kind === "error") {
-						return (
-							<UICard key={item.id} className="border-destructive">
+				<TabsContent value="practice" className="text-base">
+					<PracticePanel items={practice} onUpdate={updatePractice} />
+				</TabsContent>
+				<TabsContent value="notes" className="text-base">
+					<NotesPanel demoMarkdown={demoMode ? DEMO_NOTES : undefined} />
+				</TabsContent>
+				<TabsContent value="lesson" className="text-base">
+					<div className="flex-1 space-y-5 pb-40">
+						{items.map((item) => {
+							if (item.kind === "user") {
+								return (
+									<p
+										key={item.id}
+										className="ml-auto w-fit max-w-md rounded-2xl bg-secondary px-4 py-2 text-secondary-foreground"
+									>
+										{item.text}
+									</p>
+								);
+							}
+							if (item.kind === "error") {
+								return (
+									<UICard key={item.id} className="border-destructive">
+										<CardHeader>
+											<CardTitle className="text-destructive">
+												Something went wrong
+											</CardTitle>
+										</CardHeader>
+										<CardContent className="text-sm text-muted-foreground">
+											{item.text}
+										</CardContent>
+									</UICard>
+								);
+							}
+							const options = item.card?.options;
+							const suggestions = item.card?.suggestions;
+							return (
+								<UICard
+									key={item.id}
+									data-item-id={item.id}
+									className={cn(
+										"rounded-3xl shadow-sm",
+										item.card?.type === "recap" && "border-primary/40",
+									)}
+								>
+									<CardHeader>
+										<CardTitle className="text-2xl">
+											{item.card?.title}
+										</CardTitle>
+									</CardHeader>
+									<CardContent className="prose prose-lg max-w-none dark:prose-invert">
+										<CardMarkdown body={item.card?.body ?? ""} />
+									</CardContent>
+									{suggestions && suggestions.length > 0 && (
+										<CardContent className="flex flex-col gap-3">
+											<p className="text-sm text-muted-foreground">
+												Keep learning:
+											</p>
+											{suggestions.map((topic) => (
+												<Button
+													key={topic}
+													type="button"
+													variant="outline"
+													className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
+													disabled={loading}
+													onClick={() => startLesson(topic)}
+												>
+													<HugeiconsIcon
+														icon={ArrowRight01Icon}
+														className="size-5 shrink-0"
+													/>
+													<span className="text-base font-semibold">
+														{topic}
+													</span>
+												</Button>
+											))}
+										</CardContent>
+									)}
+									{options && (
+										<CardContent className="flex flex-col gap-3">
+											{options.map((option) => {
+												const selected = item.selectedOption === option.id;
+												const answered = item.selectedOption !== undefined;
+												return (
+													<Button
+														key={option.id}
+														type="button"
+														variant={selected ? "default" : "outline"}
+														className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
+														disabled={loading || (answered && !selected)}
+														onClick={() => {
+															if (!answered) chooseOption(item.id, option);
+														}}
+													>
+														<HugeiconsIcon
+															icon={
+																selected
+																	? Tick02Icon
+																	: (OPTION_ICONS[option.id] ?? CompassIcon)
+															}
+															className="size-6 shrink-0"
+														/>
+														<span className="flex flex-col gap-0.5">
+															<span className="text-base font-semibold">
+																{option.label}
+															</span>
+															{option.description && (
+																<span
+																	className={
+																		selected
+																			? "text-sm text-primary-foreground/80"
+																			: "text-sm text-muted-foreground"
+																	}
+																>
+																	{option.description}
+																</span>
+															)}
+														</span>
+													</Button>
+												);
+											})}
+										</CardContent>
+									)}
+								</UICard>
+							);
+						})}
+						{loading && (
+							<UICard className="rounded-3xl">
 								<CardHeader>
-									<CardTitle className="text-destructive">
-										Something went wrong
-									</CardTitle>
+									<Skeleton className="h-7 w-2/5" />
 								</CardHeader>
-								<CardContent className="text-sm text-muted-foreground">
-									{item.text}
+								<CardContent className="space-y-3">
+									<Skeleton className="h-5 w-full" />
+									<Skeleton className="h-5 w-4/5" />
 								</CardContent>
 							</UICard>
-						);
-					}
-					const options = item.card?.options;
-					const suggestions = item.card?.suggestions;
-					return (
-						<UICard
-							key={item.id}
-							data-item-id={item.id}
-							className={cn(
-								"rounded-3xl shadow-sm",
-								item.card?.type === "recap" && "border-primary/40",
-							)}
-						>
-							<CardHeader>
-								<CardTitle className="text-2xl">{item.card?.title}</CardTitle>
-							</CardHeader>
-							<CardContent className="prose prose-lg max-w-none dark:prose-invert">
-								<CardMarkdown body={item.card?.body ?? ""} />
-							</CardContent>
-							{suggestions && suggestions.length > 0 && (
-								<CardContent className="flex flex-col gap-3">
-									<p className="text-sm text-muted-foreground">
-										Keep learning:
-									</p>
-									{suggestions.map((topic) => (
-										<Button
-											key={topic}
-											type="button"
-											variant="outline"
-											className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
-											disabled={loading}
-											onClick={() => startLesson(topic)}
-										>
-											<HugeiconsIcon
-												icon={ArrowRight01Icon}
-												className="size-5 shrink-0"
-											/>
-											<span className="text-base font-semibold">{topic}</span>
-										</Button>
-									))}
-								</CardContent>
-							)}
-							{options && (
-								<CardContent className="flex flex-col gap-3">
-									{options.map((option) => {
-										const selected = item.selectedOption === option.id;
-										const answered = item.selectedOption !== undefined;
-										return (
-											<Button
-												key={option.id}
-												type="button"
-												variant={selected ? "default" : "outline"}
-												className="h-auto justify-start gap-4 whitespace-normal rounded-2xl p-4 text-left"
-												disabled={loading || (answered && !selected)}
-												onClick={() => {
-													if (!answered) chooseOption(item.id, option);
-												}}
-											>
-												<HugeiconsIcon
-													icon={
-														selected
-															? Tick02Icon
-															: (OPTION_ICONS[option.id] ?? CompassIcon)
-													}
-													className="size-6 shrink-0"
-												/>
-												<span className="flex flex-col gap-0.5">
-													<span className="text-base font-semibold">
-														{option.label}
-													</span>
-													{option.description && (
-														<span
-															className={
-																selected
-																	? "text-sm text-primary-foreground/80"
-																	: "text-sm text-muted-foreground"
-															}
-														>
-															{option.description}
-														</span>
-													)}
-												</span>
-											</Button>
-										);
-									})}
-								</CardContent>
-							)}
-						</UICard>
-					);
-				})}
-				{loading && (
-					<UICard className="rounded-3xl">
-						<CardHeader>
-							<Skeleton className="h-7 w-2/5" />
-						</CardHeader>
-						<CardContent className="space-y-3">
-							<Skeleton className="h-5 w-full" />
-							<Skeleton className="h-5 w-4/5" />
-						</CardContent>
-					</UICard>
-				)}
-				<div ref={bottomRef} />
-			</div>
+						)}
+						<div ref={bottomRef} />
+					</div>
 
-			<div className="fixed inset-x-0 bottom-0 border-t bg-background/95 p-4 backdrop-blur">
-				<form
-					className="mx-auto flex w-full max-w-[50rem] gap-3"
-					onSubmit={(event) => {
-						event.preventDefault();
-						sendMessage();
-					}}
-				>
-					<Input
-						value={input}
-						onChange={(event) => setInput(event.target.value)}
-						placeholder="Ask a question…"
-						className="h-12 rounded-2xl px-4"
-						disabled={loading}
-					/>
-					{input.trim() ? (
-						<Button
-							type="submit"
-							className="h-12 rounded-2xl px-6"
-							disabled={loading}
+					<div className="fixed inset-x-0 bottom-0 border-t bg-background/95 p-4 backdrop-blur">
+						<form
+							className="mx-auto flex w-full max-w-[50rem] gap-3"
+							onSubmit={(event) => {
+								event.preventDefault();
+								sendMessage();
+							}}
 						>
-							Send
-						</Button>
-					) : lessonEnded ? (
-						<Button
-							type="button"
-							className="h-12 rounded-2xl px-6"
-							disabled={loading}
-							onClick={newLesson}
-						>
-							New lesson
-						</Button>
-					) : (
-						<Button
-							type="button"
-							className="h-12 rounded-2xl px-6"
-							disabled={loading}
-							onClick={() => continueLesson()}
-						>
-							Continue
-						</Button>
-					)}
-				</form>
-			</div>
+							<Input
+								value={input}
+								onChange={(event) => setInput(event.target.value)}
+								placeholder="Ask a question…"
+								className="h-12 rounded-2xl px-4"
+								disabled={loading}
+							/>
+							{input.trim() ? (
+								<Button
+									type="submit"
+									className="h-12 rounded-2xl px-6"
+									disabled={loading}
+								>
+									Send
+								</Button>
+							) : lessonEnded ? (
+								<Button
+									type="button"
+									className="h-12 rounded-2xl px-6"
+									disabled={loading}
+									onClick={goHome}
+								>
+									New lesson
+								</Button>
+							) : (
+								<Button
+									type="button"
+									className="h-12 rounded-2xl px-6"
+									disabled={loading}
+									onClick={() => continueLesson()}
+								>
+									Continue
+								</Button>
+							)}
+						</form>
+					</div>
+				</TabsContent>
+			</Tabs>
 		</main>
 	);
 }

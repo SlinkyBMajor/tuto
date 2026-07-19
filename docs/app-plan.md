@@ -147,9 +147,11 @@ Stack notes:
   - A badge on the tab when new exercises arrive.
 - **Notes tab:** the structured document, rendered from the background
   markdown file.
-  - **Table of contents sidebar** — nested sections, click to jump. The
-    ToC's top level mirrors the lesson outline; subsections appear as the
-    lesson deepens a concept.
+  - **Table of contents** — nested sections, click to jump. The ToC's top
+    level mirrors the lesson outline; subsections appear as the lesson
+    deepens a concept. *(Implemented as an "On this page" block above the
+    document rather than a sidebar — fits the single-column reading
+    layout.)*
   - Same readability standards as the feed: large type, highlighted code,
     rendered Mermaid diagrams.
 - **Settings:** preferred programming language for examples (e.g. JavaScript),
@@ -208,9 +210,12 @@ Stack notes:
     the document, so it stays fast and drift-free.
   - the recap card carries `suggestions: [topic]` for seeding new lessons.
 - **Exercise evaluation:** the user's answer is conceptual, not an exact
-  string ("what goes in the blank?"), so checking is a model turn: send the
-  answer to the lesson session → get back `{ correct, explanation }`. The
-  "I don't know" button is the same turn with an explicit don't-know flag.
+  string ("what goes in the blank?"), so checking is a model call returning
+  `{ correct, explanation }`. The "I don't know" button is the same call
+  with an explicit don't-know flag. *(Implementation note: checking runs as
+  a stateless one-shot call with the full exercise as context — not against
+  the lesson session — so grading never invalidates the speculative
+  prefetch fork or pollutes lesson history.)*
 - **Preferred language** (from settings, or the per-lesson override) is
   injected into the tutor instructions: use it *when applicable*, but let
   the topic win when it implies its own language (Rust lesson → Rust
@@ -227,13 +232,26 @@ Stack notes:
 
 ### Persistence
 
-- One folder per lesson, e.g. `<data-dir>/lessons/<id>/` containing:
-  - `lesson.json` — metadata (topic, level, language, Claude session id,
-    timestamps), outline, card history, exercises and their state.
-  - `notes.md` — the structured notes document. A plain markdown file on
-    disk, so it's readable/greppable outside the app too.
-- Card history is stored by the app itself so the feed re-renders instantly
-  on resume without replaying the Claude session.
+- One folder per lesson, `<data-dir>/lessons/<id>/` (macOS:
+  `~/Library/Application Support/tuto/lessons/`), containing:
+  - `lesson.json` — bun-owned metadata (topic, language, Claude session id,
+    timestamps) merged with the webview's display snapshot (outline, current
+    concept, card/user feed, exercises and their answered state).
+  - `notes.md` — the rendered structured notes, plain markdown so it's
+    readable/greppable outside the app.
+  - `notes.json` — the notes section tree, so a resumed lesson keeps filing
+    new material into the right sections after a restart.
+- **Ownership split:** the webview holds the display state and pushes a
+  snapshot to bun after each turn/answer (`saveLesson`); bun owns all file
+  I/O, the lesson id/folder, and the notes files. Card history is stored so
+  the feed re-renders instantly on resume without replaying the session.
+- **Resume:** the home screen lists saved lessons (`listLessons` →
+  topic, progress, last-opened); opening one restores bun's session id /
+  language / notes tree and rehydrates the webview from the record, so
+  Continue picks up the live Claude session. A back button returns to the
+  library mid-lesson; `deleteLesson` removes a folder.
+- *(UI-verification aid: `?demohome` renders the home library from fixture
+  lessons without a running bun process.)*
 
 ### The prompt is the product
 
@@ -274,7 +292,10 @@ rather than inline in code.
 
 ## Build phases
 
-**Phase 1 — core loop (walking skeleton)**
+*Status: Phases 1–5 are built and verified. Phase 6 is the remaining
+backlog. (Phases 3–5 are committed-pending review at time of writing.)*
+
+**Phase 1 — core loop (walking skeleton)** ✅
 - Electrobun scaffold (React + TypeScript views, pnpm, pinned versions,
   Biome, shadcn init with the preset).
 - One window, minimal feed UI.
@@ -282,7 +303,7 @@ rather than inline in code.
   Continue → next card.
 - First version of the tutor prompt.
 
-**Phase 2 — the full lesson experience**
+**Phase 2 — the full lesson experience** ✅
 - Outline in the protocol: progress header, adaptive revisions, recap card
   with next-topic suggestions.
 - Follow-up questions, level adjustment.
@@ -291,19 +312,20 @@ rather than inline in code.
 - Mermaid rendering in cards, with validation + silent-fix fallback.
 - Card polish: typography, card types visually distinct.
 
-**Phase 3 — Practice tab**
+**Phase 3 — Practice tab** ✅
 - Exercise generation in the card protocol, Practice tab UI.
 - Answer checking + explanation fetch, "I don't know" flow.
 
-**Phase 4 — Notes document**
+**Phase 4 — Notes document** ✅
 - Notes routing in the protocol; app-side markdown file maintenance
   (card bodies filed by section path, nested sections created as needed).
-- Notes tab: rendered markdown + ToC sidebar navigation.
+- Notes tab: rendered markdown + ToC navigation.
 
-**Phase 5 — persistence**
+**Phase 5 — persistence** ✅
 - Home screen with lesson list, save/resume via `--resume`.
-- Lesson folder layout (`lesson.json` + `notes.md`); exercises and their
-  state (answered, correct, explanation shown) persist with the lesson.
+- Lesson folder layout (`lesson.json` + `notes.md` + `notes.json`);
+  exercises and their state (answered, correct, explanation shown) persist
+  with the lesson.
 
 **Phase 6 — nice-to-haves (backlog)**
 - Streaming card content.
