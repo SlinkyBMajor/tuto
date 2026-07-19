@@ -33,6 +33,14 @@ if (!second.outline.some((item) => item.id === second.card.conceptId)) {
 	console.error("FAIL: step conceptId does not match any outline item");
 	process.exit(1);
 }
+if (!second.card.notes?.sectionPath?.length) {
+	console.error("FAIL: expected the step card to carry notes routing");
+	process.exit(1);
+}
+console.log(
+	"notes sectionPath:",
+	JSON.stringify(second.card.notes.sectionPath),
+);
 
 const words = second.card.body.split(/\s+/).length;
 console.log(`\nsession resumed: ${second.sessionId === first.sessionId}`);

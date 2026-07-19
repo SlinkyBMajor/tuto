@@ -10,11 +10,29 @@ import Markdown from "react-markdown";
 import { Skeleton } from "@/components/ui/skeleton";
 import { bun } from "@/lib/rpc";
 
+export function headingId(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
+function anchoredHeading(Tag: "h2" | "h3" | "h4") {
+	return (props: { children?: ReactNode }) => {
+		const text = Children.toArray(props.children).join("");
+		return <Tag id={headingId(text)}>{props.children}</Tag>;
+	};
+}
+
 export function CardMarkdown({ body }: { body: string }) {
 	return (
 		<Markdown
 			components={{
 				pre: PreBlock,
+				// Headings get stable anchor ids so the notes ToC can jump
+				h2: anchoredHeading("h2"),
+				h3: anchoredHeading("h3"),
+				h4: anchoredHeading("h4"),
 				// Keyboard reading steps through sections: each paragraph or
 				// list is one segment (code blocks and diagrams tag themselves)
 				p: (props: { children?: ReactNode }) => (
