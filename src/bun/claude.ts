@@ -1,6 +1,7 @@
+import exerciseCheckPrompt from "../../prompts/exercise-check.md";
 import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
 import tutorPrompt from "../../prompts/tutor.md";
-import type { Card, OutlineItem } from "../shared/types";
+import type { Card, Exercise, OutlineItem } from "../shared/types";
 
 const TURN_TIMEOUT_MS = 180_000;
 
@@ -46,13 +47,21 @@ async function runClaude(args: string[]): Promise<ClaudeResult> {
 export interface TutorTurn {
 	card: Card;
 	outline?: OutlineItem[];
+	exercise?: Exercise;
 	sessionId: string;
+}
+
+// Per-lesson system prompt: the base tutor instructions plus the learner's
+// preferred code language (the topic wins when it implies its own language)
+export function composeSystemPrompt(language?: string): string {
+	if (!language?.trim()) return tutorPrompt;
+	return `${tutorPrompt}\n# Learner preferences\n\nWhen a code example or exercise fits and the topic does not imply a specific language, write it in ${language.trim()}.\n`;
 }
 
 export async function runTutorTurn(
 	userMessage: string,
 	sessionId?: string,
-	options: { fork?: boolean } = {},
+	options: { fork?: boolean; systemPrompt?: string } = {},
 ): Promise<TutorTurn> {
 	const args = [
 		"-p",
@@ -61,7 +70,7 @@ export async function runTutorTurn(
 		"--output-format",
 		"json",
 		"--system-prompt",
-		tutorPrompt,
+		options.systemPrompt ?? tutorPrompt,
 	];
 	if (sessionId) {
 		args.push("--resume", sessionId);
@@ -101,9 +110,49 @@ export async function fixMermaidDiagram(
 		.trim();
 }
 
+// Grade an exercise answer in a stateless one-shot call so the lesson
+// session (and any in-flight prefetch fork) stays untouched.
+export async function checkExerciseAnswer(
+	exercise: Exercise,
+	userAnswer: string | null,
+): Promise<{ correct: boolean; explanation: string }> {
+	const learnerPart =
+		userAnswer === null
+			? 'The learner pressed "I don\'t know".'
+			: `Learner's answer: ${userAnswer}`;
+	const { result } = await runClaude([
+		"-p",
+		"--tools",
+		"",
+		"--output-format",
+		"json",
+		"--no-session-persistence",
+		"--system-prompt",
+		exerciseCheckPrompt,
+		`Question: ${exercise.question}\n\nSnippet (${exercise.code.language}):\n${exercise.code.source}\n\nExpected answer: ${exercise.answer}\n\n${learnerPart}`,
+	]);
+	const start = result.indexOf("{");
+	const end = result.lastIndexOf("}");
+	if (start === -1 || end <= start) {
+		throw new Error(`check reply contained no JSON: ${result.slice(0, 200)}`);
+	}
+	const parsed = JSON.parse(result.slice(start, end + 1));
+	if (
+		typeof parsed.correct !== "boolean" ||
+		typeof parsed.explanation !== "string"
+	) {
+		throw new Error(`check reply malformed: ${result.slice(0, 200)}`);
+	}
+	return { correct: parsed.correct, explanation: parsed.explanation };
+}
+
 // The tutor is instructed to reply with bare JSON, but models occasionally
 // wrap it in code fences or stray prose — extract the outermost object.
-function parseReply(text: string): { card: Card; outline?: OutlineItem[] } {
+function parseReply(text: string): {
+	card: Card;
+	outline?: OutlineItem[];
+	exercise?: Exercise;
+} {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
 	if (start === -1 || end <= start) {
@@ -134,8 +183,44 @@ function parseReply(text: string): { card: Card; outline?: OutlineItem[] } {
 				typeof card.conceptId === "string" ? card.conceptId : undefined,
 			options: parseOptions(card.options),
 			suggestions: parseSuggestions(card.suggestions),
+			notes: parseNotes(card.notes),
 		},
 		outline: parseOutline(parsed.outline),
+		exercise: parseExercise(parsed.exercise),
+	};
+}
+
+function parseNotes(raw: unknown): Card["notes"] {
+	const notes = raw as { sectionPath?: unknown } | null;
+	if (!notes || !Array.isArray(notes.sectionPath)) return undefined;
+	const sectionPath = notes.sectionPath.filter(
+		(part): part is string => typeof part === "string" && part.trim() !== "",
+	);
+	return sectionPath.length > 0 ? { sectionPath } : undefined;
+}
+
+function parseExercise(raw: unknown): Exercise | undefined {
+	const exercise = raw as {
+		conceptId?: unknown;
+		question?: unknown;
+		code?: { language?: unknown; source?: unknown };
+		answer?: unknown;
+	} | null;
+	if (
+		!exercise ||
+		typeof exercise.question !== "string" ||
+		typeof exercise.answer !== "string" ||
+		typeof exercise.code?.language !== "string" ||
+		typeof exercise.code?.source !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		conceptId:
+			typeof exercise.conceptId === "string" ? exercise.conceptId : undefined,
+		question: exercise.question,
+		code: { language: exercise.code.language, source: exercise.code.source },
+		answer: exercise.answer,
 	};
 }
 
