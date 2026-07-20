@@ -121,13 +121,32 @@ export default function App() {
 		index: number;
 	} | null>(null);
 	const bottomRef = useRef<HTMLDivElement>(null);
+	const headerRef = useRef<HTMLDivElement>(null);
 	// True while the newest card was requested via keyboard reading — its
 	// first section gets highlighted and positions the view instead of the
 	// default scroll-to-bottom
 	const keyboardFlowRef = useRef(false);
+	// Continue pins the new card's top just below the header and holds it
+	// there while content streams in below, instead of following the text.
+	const pinActiveRef = useRef(false);
+	const pinAnchorRef = useRef(0);
+	// Set when a card's first section is highlighted on arrival, so that one
+	// highlight doesn't scroll (the card is already pinned at the top).
+	const skipHighlightScrollRef = useRef(false);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: items/loading/streaming are intentional triggers — scroll to bottom as the feed grows, the skeleton appears, or the streaming preview extends
+	// biome-ignore lint/correctness/useExhaustiveDependencies: items/loading/streaming are intentional triggers — reposition as the feed grows, the skeleton appears, or the streaming preview extends
 	useEffect(() => {
+		// Continue: keep the new card's top fixed just below the header while
+		// its content streams in below (the anchor is a fixed document Y, so
+		// re-applying it on each update holds position without following text).
+		if (pinActiveRef.current) {
+			const offset = (headerRef.current?.offsetHeight ?? 60) + 8;
+			window.scrollTo({
+				top: Math.max(pinAnchorRef.current - offset, 0),
+				behavior: "auto",
+			});
+			return;
+		}
 		if (keyboardFlowRef.current) return;
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [items, loading, streaming]);
@@ -193,6 +212,8 @@ export default function App() {
 		setItems((prev) => [...prev, { ...item, id }]);
 		if (options.highlightNew && item.kind === "card") {
 			keyboardFlowRef.current = true;
+			// The card is pinned at the top; don't let this highlight scroll it
+			skipHighlightScrollRef.current = true;
 			setHighlight({ itemId: id, index: 0 });
 		} else {
 			keyboardFlowRef.current = false;
@@ -202,10 +223,20 @@ export default function App() {
 
 	async function runTurn(
 		request: Promise<TurnResult>,
-		options: { highlightNew?: boolean } = {},
+		options: { highlightNew?: boolean; pinTop?: boolean } = {},
 	) {
+		if (options.pinTop) {
+			// Capture where the new card will start before any re-render, so it
+			// can be pinned just below the header as content streams in.
+			pinActiveRef.current = true;
+			pinAnchorRef.current =
+				(bottomRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY;
+		} else {
+			pinActiveRef.current = false;
+		}
 		setLoading(true);
 		turnActiveRef.current = true;
+		keyboardFlowRef.current = false;
 		setStreaming(null);
 		try {
 			const result = await request;
@@ -291,7 +322,7 @@ export default function App() {
 
 	function continueLesson(options: { highlightNew?: boolean } = {}) {
 		if (loading) return;
-		void runTurn(bun.continueLesson({}), options);
+		void runTurn(bun.continueLesson({}), { ...options, pinTop: true });
 	}
 
 	function chooseOption(itemId: number, option: CardOption) {
@@ -316,7 +347,13 @@ export default function App() {
 		const segment = card?.querySelectorAll("[data-segment]")[highlight.index];
 		if (segment) {
 			segment.classList.add("segment-active");
-			segment.scrollIntoView({ behavior: "smooth", block: "center" });
+			// Arrival highlight (pinned card) sets position once without scrolling;
+			// user-driven stepping scrolls the active section into view.
+			if (skipHighlightScrollRef.current) {
+				skipHighlightScrollRef.current = false;
+			} else {
+				segment.scrollIntoView({ behavior: "smooth", block: "center" });
+			}
 		}
 	}, [highlight]);
 
@@ -436,7 +473,10 @@ export default function App() {
 				onValueChange={(value) => setTab(String(value))}
 				className="flex-1"
 			>
-				<div className="sticky top-0 z-10 -mx-6 mb-2 border-b bg-background/95 px-6 py-2 backdrop-blur">
+				<div
+					ref={headerRef}
+					className="sticky top-0 z-10 -mx-6 mb-2 border-b bg-background/95 px-6 py-2 backdrop-blur"
+				>
 					<div className="mx-auto flex w-full max-w-[50rem] items-center gap-3">
 						<Button
 							type="button"
