@@ -226,8 +226,11 @@ function ShikiBlock({
 }
 
 // Mermaid's colour helpers can't parse oklch, so the diagram palette lives in
-// hex CSS variables that mirror the design tokens (see index.css).
-function diagramTheme() {
+// hex CSS variables that mirror the design tokens (see index.css). The accent
+// pair is returned alongside rather than folded in: it styles the focus node
+// through the diagram source, not through a theme variable — see
+// withFocusStyle.
+function diagramPalette() {
 	const styles = getComputedStyle(document.documentElement);
 	const token = (name: string) => styles.getPropertyValue(name).trim();
 	const surface = token("--diagram-surface");
@@ -236,7 +239,9 @@ function diagramTheme() {
 	const text = token("--diagram-text");
 	const line = token("--diagram-line");
 	const soft = token("--diagram-accent-soft");
-	return {
+	const accent = token("--diagram-accent");
+	const accentText = token("--diagram-accent-text");
+	const variables = {
 		darkMode: document.documentElement.classList.contains("dark"),
 		background: surface,
 		primaryColor: node,
@@ -268,7 +273,46 @@ function diagramTheme() {
 		noteBkgColor: soft,
 		noteBorderColor: border,
 		noteTextColor: text,
+		// State: a composite state is visually a cluster, so it reuses the
+		// flowchart cluster treatment. The start and end dots are the exception
+		// to "unset means derived" — mermaid assigns innerEndBackground and
+		// specialStateColor unconditionally — but every key here still wins,
+		// because the theme re-applies overrides after deriving.
+		stateBkg: node,
+		stateLabelColor: text,
+		transitionColor: line,
+		transitionLabelColor: text,
+		labelBackgroundColor: surface,
+		compositeBackground: surface,
+		compositeBorder: border,
+		altBackground: surface,
+		classText: text,
+		// ER: the only two variables in mermaid's base theme that ignore the
+		// palette entirely, falling back to a hardcoded #ffffff/#f2f2f2. Left
+		// unset, every attribute row is a light band behind dark-mode text.
+		attributeBackgroundColorOdd: node,
+		attributeBackgroundColorEven: surface,
 	};
+	return { variables, accent, accentText };
+}
+
+// Mermaid inlines classDef styles scoped to the render id — `#mmd… .focus>*
+// {fill:…!important}`. That ID beats any stylesheet rule we could write, so a
+// CSS override cannot retheme the highlight; the colour has to be correct in
+// the source we hand to mermaid. The tutor sends a fixed light-mode indigo
+// (a prompt cannot read a CSS variable), so swap its classDef for one built
+// from the live tokens. Leaving the tutor's line in place as a fallback means
+// a diagram still renders sensibly if this never fires.
+//
+// Only flowchart (`graph` is its legacy keyword) and stateDiagram get this:
+// `class` means something else entirely in classDiagram, where it declares one.
+const FOCUS_STYLED_TYPES = /^\s*(flowchart|graph|stateDiagram)/;
+
+function withFocusStyle(source: string, accent: string, onAccent: string) {
+	if (!FOCUS_STYLED_TYPES.test(source)) return source;
+	if (!/(^|\s)class\s+[\w,]+\s+focus\b|:::focus\b/.test(source)) return source;
+	const stripped = source.replace(/^[ \t]*classDef[ \t]+focus\b.*$/gm, "");
+	return `${stripped.trimEnd()}\n  classDef focus fill:${accent},stroke:${accent},color:${onAccent}\n`;
 }
 
 function MermaidBlock({ source }: { source: string }) {
@@ -279,17 +323,18 @@ function MermaidBlock({ source }: { source: string }) {
 		let cancelled = false;
 		(async () => {
 			const mermaid = (await import("mermaid")).default;
+			const { variables, accent, accentText } = diagramPalette();
 			mermaid.initialize({
 				startOnLoad: false,
 				theme: "base",
-				themeVariables: diagramTheme(),
+				themeVariables: variables,
 				fontFamily: "'Inter Variable', sans-serif",
 				fontSize: 14,
 				flowchart: { curve: "basis", padding: 12, useMaxWidth: true },
 				sequence: { useMaxWidth: true },
 			});
 
-			let code = source;
+			let code = withFocusStyle(source, accent, accentText);
 			try {
 				await mermaid.parse(code);
 			} catch (parseError) {

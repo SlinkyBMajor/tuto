@@ -118,6 +118,9 @@
 	--diagram-line: #71717a;
 	--diagram-accent: #4f46e5;
 	--diagram-accent-soft: #eef2ff;
+	/* Label colour on an accent-filled node. The accent flips from dark indigo
+	   to light between themes, so the text on it has to flip the other way. */
+	--diagram-accent-text: #ffffff;
 }
 
 .dark {
@@ -162,6 +165,7 @@
 	--diagram-line: #71717a;
 	--diagram-accent: #a5b4fc;
 	--diagram-accent-soft: #312e81;
+	--diagram-accent-text: #18181b;
 }
 
 @layer base {

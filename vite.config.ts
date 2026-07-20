@@ -5,11 +5,29 @@ import { defineConfig, type Plugin } from "vite";
 
 // Diagram types the tutor is allowed to emit, as the chunk basenames mermaid
 // gives them. Keep in step with the Diagrams section of prompts/tutor.md.
-const KEPT_DIAGRAMS = ["flowDiagram", "sequenceDiagram"];
+//
+// These five are the cheap ones: each of the three beyond flow and sequence
+// costs 26–49 KB, because they reuse the dagre layout and the renderer chunks
+// already pulled in. The types deliberately left out are the ones that drag in
+// a second heavyweight dependency — `mindmap` (+528 KB, cytoscape),
+// `gitGraph` (+697 KB, the Langium parser) and `architecture` (+1.24 MB, both).
+const KEPT_DIAGRAMS = [
+	"flowDiagram",
+	"sequenceDiagram",
+	// Prefix-matched, so these also catch the -v2 chunks alongside the v1 ones.
+	"stateDiagram",
+	"classDiagram",
+	"erDiagram",
+];
 
-// Layout engines those two need. The other two mermaid registers — `swimlanes`
+// Layout engines those need. The other two mermaid registers — `swimlanes`
 // and `cose-bilkent`, which drags in all of cytoscape — serve only the swimlane
-// and mindmap diagrams, which are no longer bundled.
+// and mindmap diagrams, which are not bundled.
+//
+// Adding a diagram type here is not always enough: `mindmap` resolves its
+// layout through this registry at RENDER time, so bundling it without
+// `cose-bilkent` builds clean and then throws on the first diagram. buildEnd
+// below cannot catch that — it only proves the kept prefixes matched a chunk.
 const KEPT_LAYOUTS = ["dagre"];
 
 // Mermaid registers all ~36 of its built-in diagram types through lazy loaders
