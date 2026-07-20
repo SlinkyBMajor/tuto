@@ -303,14 +303,21 @@ export async function checkExerciseAnswer(
 	if (start === -1 || end <= start) {
 		throw new Error(`check reply contained no JSON: ${result.slice(0, 200)}`);
 	}
-	const parsed = JSON.parse(result.slice(start, end + 1));
-	if (
-		typeof parsed.correct !== "boolean" ||
-		typeof parsed.explanation !== "string"
-	) {
+	let parsed: { correct?: unknown; explanation?: unknown };
+	try {
+		parsed = JSON.parse(result.slice(start, end + 1));
+	} catch (error) {
+		// Usually a raw newline or an unescaped quote inside the explanation, or
+		// a reply that got cut off before its closing brace
+		throw new Error(
+			`check reply was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const { correct, explanation } = parsed;
+	if (typeof correct !== "boolean" || typeof explanation !== "string") {
 		throw new Error(`check reply malformed: ${result.slice(0, 200)}`);
 	}
-	return { correct: parsed.correct, explanation: parsed.explanation };
+	return { correct, explanation };
 }
 
 // The tutor is instructed to reply with bare JSON, but models occasionally
