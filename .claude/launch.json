@@ -6,6 +6,12 @@
 			"runtimeExecutable": "pnpm",
 			"runtimeArgs": ["run", "hmr"],
 			"port": 5173
+		},
+		{
+			"name": "vite-preview",
+			"runtimeExecutable": "npx",
+			"runtimeArgs": ["vite", "preview", "--port", "4173", "--strictPort"],
+			"port": 4173
 		}
 	]
 }
