@@ -144,7 +144,7 @@ export function ExplainSelection({ topic }: { topic: string }) {
 						top: Math.max(picked.top - 44, 8),
 						transform: "translateX(-50%)",
 					}}
-					className="z-50 flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground shadow-lg"
+					className="z-50 flex items-center gap-1.5 rounded-full bg-marker px-3.5 py-2 text-sm font-medium text-marker-foreground shadow-lg ring-1 ring-foreground/10 transition-transform hover:scale-[1.03]"
 				>
 					<HugeiconsIcon icon={SparklesIcon} className="size-4" />
 					Explain
@@ -158,12 +158,12 @@ export function ExplainSelection({ topic }: { topic: string }) {
 						top: panel.top,
 						transform: "translateX(-50%)",
 					}}
-					className="z-50 w-80 max-w-[90vw] rounded-2xl border bg-popover p-4 text-popover-foreground shadow-xl"
+					className="animate-in fade-in-0 zoom-in-95 z-50 w-80 max-w-[90vw] rounded-2xl bg-popover p-4 text-popover-foreground shadow-xl ring-1 ring-foreground/8 duration-150"
 				>
-					<p className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+					<p className="mb-2.5 flex items-center gap-1.5 border-b border-border pb-2.5 text-sm font-semibold">
 						<HugeiconsIcon
 							icon={SparklesIcon}
-							className="size-4 text-primary"
+							className="size-4 shrink-0 text-marker"
 						/>
 						<span className="truncate">{panel.term}</span>
 					</p>

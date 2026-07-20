@@ -8,115 +8,160 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+	--font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+	--font-serif: "Lora Variable", Georgia, serif;
 	--font-heading: var(--font-sans);
-	--font-sans: "Inter Variable", sans-serif;
-	--color-sidebar-ring: var(--sidebar-ring);
-	--color-sidebar-border: var(--sidebar-border);
-	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-	--color-sidebar-accent: var(--sidebar-accent);
-	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-	--color-sidebar-primary: var(--sidebar-primary);
-	--color-sidebar-foreground: var(--sidebar-foreground);
-	--color-sidebar: var(--sidebar);
-	--color-chart-5: var(--chart-5);
-	--color-chart-4: var(--chart-4);
-	--color-chart-3: var(--chart-3);
-	--color-chart-2: var(--chart-2);
-	--color-chart-1: var(--chart-1);
-	--color-ring: var(--ring);
-	--color-input: var(--input);
-	--color-border: var(--border);
-	--color-destructive: var(--destructive);
-	--color-accent-foreground: var(--accent-foreground);
-	--color-accent: var(--accent);
-	--color-muted-foreground: var(--muted-foreground);
-	--color-muted: var(--muted);
-	--color-secondary-foreground: var(--secondary-foreground);
-	--color-secondary: var(--secondary);
-	--color-primary-foreground: var(--primary-foreground);
-	--color-primary: var(--primary);
-	--color-popover-foreground: var(--popover-foreground);
-	--color-popover: var(--popover);
-	--color-card-foreground: var(--card-foreground);
-	--color-card: var(--card);
-	--color-foreground: var(--foreground);
+	--font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
 	--color-background: var(--background);
-	--radius-sm: calc(var(--radius) * 0.6);
-	--radius-md: calc(var(--radius) * 0.8);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-success: var(--success);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	/* Inset surface: code blocks, diagrams, wells inside a card */
+	--color-surface: var(--surface);
+	/* The one chromatic colour. Chrome stays neutral ink; the marker is
+	   reserved for moments inside the content — where you are reading, the
+	   blank to fill, the term you selected, a link. */
+	--color-marker: var(--marker);
+	--color-marker-foreground: var(--marker-foreground);
+
+	/* "Large and rounded" (see docs/app-plan.md), dialled back from bubble
+	   to product — corners stay generous but stop swallowing the corners
+	   of the content they hold. */
+	--radius-sm: calc(var(--radius) * 0.5);
+	--radius-md: calc(var(--radius) * 0.7);
 	--radius-lg: var(--radius);
-	--radius-xl: calc(var(--radius) * 1.4);
-	--radius-2xl: calc(var(--radius) * 1.8);
-	--radius-3xl: calc(var(--radius) * 2.2);
-	--radius-4xl: calc(var(--radius) * 2.6);
+	--radius-xl: calc(var(--radius) * 1.15);
+	--radius-2xl: calc(var(--radius) * 1.4);
+	--radius-3xl: calc(var(--radius) * 1.7);
+	--radius-4xl: calc(var(--radius) * 2);
+
+	/* Elevation is what separates a card from the canvas here, so the whole
+	   scale is redefined: warm and soft in light, black and deep in dark. */
+	--shadow-2xs: var(--elevation-2xs);
+	--shadow-xs: var(--elevation-xs);
+	--shadow-sm: var(--elevation-sm);
+	--shadow-md: var(--elevation-md);
+	--shadow-lg: var(--elevation-lg);
+	--shadow-xl: var(--elevation-xl);
 }
 
+/* shadcn's zinc preset, with three deliberate additions: `--marker` (the one
+   chromatic colour, reserved for moments inside the content), `--surface` (the
+   inset well behind code and diagrams), and a redefined elevation scale.
+   `--radius` stays at the project's own "large and rounded" value. */
 :root {
-	--background: oklch(1 0 0);
-	--foreground: oklch(0.147 0.004 49.25);
+	--radius: 0.875rem;
+
+	/* Zinc's own `--sidebar` step, used here as the canvas: the preset pairs a
+	   white background with white cards, which leaves a feed of cards reading
+	   as one flat sheet. One step down is what makes a card a card. */
+	--background: oklch(0.985 0 0);
+	--foreground: oklch(0.141 0.005 285.823);
 	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.147 0.004 49.25);
+	--card-foreground: oklch(0.141 0.005 285.823);
 	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.147 0.004 49.25);
-	--primary: oklch(0.216 0.006 56.043);
-	--primary-foreground: oklch(0.985 0.001 106.423);
-	--secondary: oklch(0.97 0.001 106.424);
-	--secondary-foreground: oklch(0.216 0.006 56.043);
-	--muted: oklch(0.97 0.001 106.424);
-	--muted-foreground: oklch(0.553 0.013 58.071);
-	--accent: oklch(0.97 0.001 106.424);
-	--accent-foreground: oklch(0.216 0.006 56.043);
+	--popover-foreground: oklch(0.141 0.005 285.823);
+	--primary: oklch(0.21 0.006 285.885);
+	--primary-foreground: oklch(0.985 0 0);
+	--secondary: oklch(0.967 0.001 286.375);
+	--secondary-foreground: oklch(0.21 0.006 285.885);
+	--muted: oklch(0.967 0.001 286.375);
+	--muted-foreground: oklch(0.552 0.016 285.938);
+	--accent: oklch(0.967 0.001 286.375);
+	--accent-foreground: oklch(0.21 0.006 285.885);
 	--destructive: oklch(0.577 0.245 27.325);
-	--border: oklch(0.923 0.003 48.717);
-	--input: oklch(0.923 0.003 48.717);
-	--ring: oklch(0.709 0.01 56.259);
-	--chart-1: oklch(0.869 0.005 56.366);
-	--chart-2: oklch(0.553 0.013 58.071);
-	--chart-3: oklch(0.444 0.011 73.639);
-	--chart-4: oklch(0.374 0.01 67.558);
-	--chart-5: oklch(0.268 0.007 34.298);
-	--radius: 0.625rem;
-	--sidebar: oklch(0.985 0.001 106.423);
-	--sidebar-foreground: oklch(0.147 0.004 49.25);
-	--sidebar-primary: oklch(0.216 0.006 56.043);
-	--sidebar-primary-foreground: oklch(0.985 0.001 106.423);
-	--sidebar-accent: oklch(0.97 0.001 106.424);
-	--sidebar-accent-foreground: oklch(0.216 0.006 56.043);
-	--sidebar-border: oklch(0.923 0.003 48.717);
-	--sidebar-ring: oklch(0.709 0.01 56.259);
+	--success: oklch(0.505 0.125 155);
+	--marker: oklch(0.485 0.175 273);
+	--marker-foreground: oklch(0.99 0.005 273);
+	--border: oklch(0.92 0.004 286.32);
+	--input: oklch(0.92 0.004 286.32);
+	--ring: oklch(0.485 0.175 273);
+	--surface: oklch(0.97 0.001 286.375);
+
+	--elevation-2xs: 0 1px 1px oklch(0.141 0.005 286 / 0.04);
+	--elevation-xs: 0 1px 2px oklch(0.141 0.005 286 / 0.05);
+	--elevation-sm:
+		0 1px 2px oklch(0.141 0.005 286 / 0.05),
+		0 2px 6px -1px oklch(0.141 0.005 286 / 0.05);
+	--elevation-md:
+		0 1px 2px oklch(0.141 0.005 286 / 0.04),
+		0 6px 16px -4px oklch(0.141 0.005 286 / 0.08);
+	--elevation-lg:
+		0 2px 4px oklch(0.141 0.005 286 / 0.04),
+		0 14px 32px -8px oklch(0.141 0.005 286 / 0.12);
+	--elevation-xl:
+		0 4px 8px oklch(0.141 0.005 286 / 0.05),
+		0 28px 56px -16px oklch(0.141 0.005 286 / 0.16);
+
+	/* Mermaid parses these with khroma, which has no oklch support — keep
+	   the diagram palette in hex and mirror the tokens above by eye. */
+	--diagram-surface: #f4f4f5;
+	--diagram-node: #ffffff;
+	--diagram-border: #d4d4d8;
+	--diagram-text: #27272a;
+	--diagram-line: #71717a;
+	--diagram-accent: #4f46e5;
+	--diagram-accent-soft: #eef2ff;
 }
 
 .dark {
-	--background: oklch(0.147 0.004 49.25);
-	--foreground: oklch(0.985 0.001 106.423);
-	--card: oklch(0.216 0.006 56.043);
-	--card-foreground: oklch(0.985 0.001 106.423);
-	--popover: oklch(0.216 0.006 56.043);
-	--popover-foreground: oklch(0.985 0.001 106.423);
-	--primary: oklch(0.923 0.003 48.717);
-	--primary-foreground: oklch(0.216 0.006 56.043);
-	--secondary: oklch(0.268 0.007 34.298);
-	--secondary-foreground: oklch(0.985 0.001 106.423);
-	--muted: oklch(0.268 0.007 34.298);
-	--muted-foreground: oklch(0.709 0.01 56.259);
-	--accent: oklch(0.268 0.007 34.298);
-	--accent-foreground: oklch(0.985 0.001 106.423);
+	--background: oklch(0.141 0.005 285.823);
+	--foreground: oklch(0.985 0 0);
+	--card: oklch(0.21 0.006 285.885);
+	--card-foreground: oklch(0.985 0 0);
+	--popover: oklch(0.21 0.006 285.885);
+	--popover-foreground: oklch(0.985 0 0);
+	--primary: oklch(0.92 0.004 286.32);
+	--primary-foreground: oklch(0.21 0.006 285.885);
+	--secondary: oklch(0.274 0.006 286.033);
+	--secondary-foreground: oklch(0.985 0 0);
+	--muted: oklch(0.274 0.006 286.033);
+	--muted-foreground: oklch(0.705 0.015 286.067);
+	--accent: oklch(0.274 0.006 286.033);
+	--accent-foreground: oklch(0.985 0 0);
 	--destructive: oklch(0.704 0.191 22.216);
+	--success: oklch(0.72 0.15 155);
+	--marker: oklch(0.7 0.15 274);
+	--marker-foreground: oklch(0.17 0.03 274);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.553 0.013 58.071);
-	--chart-1: oklch(0.869 0.005 56.366);
-	--chart-2: oklch(0.553 0.013 58.071);
-	--chart-3: oklch(0.444 0.011 73.639);
-	--chart-4: oklch(0.374 0.01 67.558);
-	--chart-5: oklch(0.268 0.007 34.298);
-	--sidebar: oklch(0.216 0.006 56.043);
-	--sidebar-foreground: oklch(0.985 0.001 106.423);
-	--sidebar-primary: oklch(0.488 0.243 264.376);
-	--sidebar-primary-foreground: oklch(0.985 0.001 106.423);
-	--sidebar-accent: oklch(0.268 0.007 34.298);
-	--sidebar-accent-foreground: oklch(0.985 0.001 106.423);
-	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.553 0.013 58.071);
+	--ring: oklch(0.7 0.15 274);
+	--surface: oklch(0.178 0.005 286);
+
+	--elevation-2xs: 0 1px 1px oklch(0 0 0 / 0.3);
+	--elevation-xs: 0 1px 2px oklch(0 0 0 / 0.35);
+	--elevation-sm:
+		0 1px 2px oklch(0 0 0 / 0.4), 0 2px 6px -1px oklch(0 0 0 / 0.3);
+	--elevation-md:
+		0 1px 2px oklch(0 0 0 / 0.4), 0 6px 16px -4px oklch(0 0 0 / 0.45);
+	--elevation-lg:
+		0 2px 4px oklch(0 0 0 / 0.4), 0 14px 32px -8px oklch(0 0 0 / 0.55);
+	--elevation-xl:
+		0 4px 8px oklch(0 0 0 / 0.45), 0 28px 56px -16px oklch(0 0 0 / 0.6);
+
+	--diagram-surface: #18181b;
+	--diagram-node: #27272a;
+	--diagram-border: #3f3f46;
+	--diagram-text: #e4e4e7;
+	--diagram-line: #71717a;
+	--diagram-accent: #a5b4fc;
+	--diagram-accent-soft: #312e81;
 }
 
 @layer base {
@@ -125,32 +170,53 @@
 	}
 	body {
 		@apply bg-background text-foreground;
+		-webkit-font-smoothing: antialiased;
+		text-rendering: optimizeLegibility;
 	}
 	html {
 		@apply font-sans;
+		scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent)
+			transparent;
+		scrollbar-width: thin;
 	}
-}
-
-/* App design language: large and rounded (see docs/app-plan.md) */
-:root {
-	--radius: 1rem;
-	--font-reading: var(--font-sans);
+	/* Selecting text is a feature here (it offers "Explain"), so the
+	   selection colour is part of the accent language rather than the
+	   browser default. */
+	::selection {
+		background: color-mix(in oklch, var(--marker) 20%, transparent);
+	}
 }
 
 html {
 	font-size: 18px;
 }
 
-/* Settings: text size steps */
+/* Settings: text size. Scoped to the lesson's reading surfaces — every length
+   in the app is rem-based, so scaling the root font size here would resize the
+   whole interface, chrome included, rather than the passage being read. */
+:root {
+	--reading-scale: 1;
+}
+
 html.font-large {
-	font-size: 20px;
+	--reading-scale: 1.11;
 }
 
 html.font-xlarge {
-	font-size: 22px;
+	--reading-scale: 1.22;
+}
+
+/* prose-lg sets 1.125rem and sizes its descendants in em, so overriding the
+   container's size scales the whole passage proportionally. */
+.reading {
+	font-size: calc(1.125rem * var(--reading-scale));
 }
 
 /* Settings: serif reading font — applies to lesson content, not UI chrome */
+:root {
+	--font-reading: var(--font-sans);
+}
+
 .serif-reading {
 	--font-reading: "Lora Variable", Georgia, serif;
 }
@@ -160,49 +226,249 @@ html.font-xlarge {
 	font-family: var(--font-reading);
 }
 
-/* Code blocks: shiki emits <pre class="shiki"> with inline theme colors */
-.prose pre.shiki {
-	border-radius: calc(var(--radius) * 1.4);
-	padding: 1.25rem;
-	font-size: 0.85em;
-	overflow-x: auto;
+/* ---------------------------------------------------------------- prose */
+
+/* Both the normal and the inverted set point at the same tokens, so prose
+   follows light/dark from the palette and `dark:prose-invert` is a no-op. */
+.prose {
+	--tw-prose-body: var(--foreground);
+	--tw-prose-headings: var(--foreground);
+	--tw-prose-lead: var(--muted-foreground);
+	--tw-prose-links: var(--marker);
+	--tw-prose-bold: var(--foreground);
+	--tw-prose-counters: var(--muted-foreground);
+	--tw-prose-bullets: color-mix(in oklch, var(--foreground) 30%, transparent);
+	--tw-prose-hr: var(--border);
+	--tw-prose-quotes: var(--foreground);
+	--tw-prose-quote-borders: var(--marker);
+	--tw-prose-captions: var(--muted-foreground);
+	--tw-prose-code: var(--foreground);
+	--tw-prose-th-borders: var(--border);
+	--tw-prose-td-borders: var(--border);
+	--tw-prose-invert-body: var(--foreground);
+	--tw-prose-invert-headings: var(--foreground);
+	--tw-prose-invert-lead: var(--muted-foreground);
+	--tw-prose-invert-links: var(--marker);
+	--tw-prose-invert-bold: var(--foreground);
+	--tw-prose-invert-counters: var(--muted-foreground);
+	--tw-prose-invert-bullets: color-mix(
+		in oklch,
+		var(--foreground) 30%,
+		transparent
+	);
+	--tw-prose-invert-hr: var(--border);
+	--tw-prose-invert-quotes: var(--foreground);
+	--tw-prose-invert-quote-borders: var(--marker);
+	--tw-prose-invert-captions: var(--muted-foreground);
+	--tw-prose-invert-code: var(--foreground);
+	--tw-prose-invert-th-borders: var(--border);
+	--tw-prose-invert-td-borders: var(--border);
 }
 
-.dark .shiki,
-.dark .shiki span {
+/* The plugin's default scale is built for marketing pages: an h1 at 2.67em
+   in weight 800 shouts over the prose it introduces. These steps keep the
+   hierarchy legible while letting the body text stay the loudest thing. */
+.prose :where(h1, h2, h3, h4) {
+	font-family: var(--font-reading);
+	font-weight: 650;
+	letter-spacing: -0.022em;
+	text-wrap: balance;
+}
+
+.prose :where(h1) {
+	font-size: 2em;
+	line-height: 1.15;
+}
+
+.prose :where(h2) {
+	font-size: 1.45em;
+	line-height: 1.25;
+}
+
+.prose :where(h3) {
+	font-size: 1.15em;
+	line-height: 1.4;
+}
+
+.prose :where(h4) {
+	font-size: 1em;
+	line-height: 1.5;
+}
+
+.prose :where(p, li) {
+	text-wrap: pretty;
+}
+
+/* The notes document is long and hierarchical, so top-level sections get a
+   rule to break the page into scannable blocks. Cards are short and already
+   have a title, so this is scoped to the document. */
+.notes-doc :where(h2):not(:first-child) {
+	margin-top: 2.2em;
+	padding-top: 1.6em;
+	border-top: 1px solid var(--border);
+}
+
+/* The opening section already has the document title above it — a rule there
+   reads as an underline on the title rather than as a divider. */
+.notes-doc :where(h1) + :where(h2):not(:first-child) {
+	margin-top: 1.4em;
+	padding-top: 0;
+	border-top: none;
+}
+
+.prose :where(strong) {
+	font-weight: 650;
+}
+
+.prose :where(a) {
+	text-decoration-color: color-mix(in oklch, var(--marker) 40%, transparent);
+	text-underline-offset: 3px;
+}
+
+/* Inline code as a chip. The typography plugin wraps it in literal
+   backticks by default, which read as a typo in a lesson card. */
+.prose :where(code):not(pre code) {
+	font-family: var(--font-mono);
+	font-size: 0.82em;
+	font-weight: 500;
+	padding: 0.14em 0.4em;
+	border-radius: calc(var(--radius) * 0.45);
+	background: color-mix(in oklch, var(--foreground) 6%, transparent);
+	border: 1px solid color-mix(in oklch, var(--foreground) 7%, transparent);
+	white-space: nowrap;
+}
+
+.prose :where(code)::before,
+.prose :where(code)::after {
+	content: none;
+}
+
+.prose :where(blockquote) {
+	font-style: normal;
+	border-inline-start-width: 3px;
+	padding-inline-start: 1.1em;
+}
+
+.prose :where(blockquote p:first-of-type)::before,
+.prose :where(blockquote p:last-of-type)::after {
+	content: none;
+}
+
+/* --------------------------------------------------- code blocks + diagrams */
+
+/* Rendered by CardMarkdown as `not-prose`, so everything here is explicit
+   rather than a negotiation with the typography plugin. */
+.code-block {
+	margin-block: 1.5em;
+	border-radius: var(--radius-2xl);
+	background: var(--surface);
+}
+
+.code-block__bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	padding: 0.5rem 0.5rem 0 1.05rem;
+}
+
+.code-block__lang {
+	font-size: 0.72rem;
+	color: var(--muted-foreground);
+}
+
+.code-block pre {
+	margin: 0;
+	padding: 1rem 1.15rem 1.1rem;
+	background: transparent !important;
+	font-family: var(--font-mono);
+	/* Code is lesson content, so it follows the reading size too. The block's
+	   language label stays fixed: it is metadata, not part of the passage. */
+	font-size: calc(0.85rem * var(--reading-scale));
+	line-height: 1.75;
+	overflow-x: auto;
+	tab-size: 2;
+	/* Clips its own scrollbar to the block's rounded corners, which the
+	   parent can no longer do — see the keyboard reading note below. */
+	border-bottom-left-radius: var(--radius-2xl);
+	border-bottom-right-radius: var(--radius-2xl);
+}
+
+.code-block pre span {
+	background: transparent !important;
+}
+
+.dark .code-block .shiki,
+.dark .code-block .shiki span {
 	color: var(--shiki-dark) !important;
-	background-color: var(--shiki-dark-bg) !important;
 	font-style: var(--shiki-dark-font-style) !important;
 	font-weight: var(--shiki-dark-font-weight) !important;
 	text-decoration: var(--shiki-dark-text-decoration) !important;
 }
 
-/* Keyboard reading: spotlight the active section. The active section keeps
-   full contrast (normal colors + foreground bump) and gets a small left
-   position bar; the card's OTHER sections dim instead — focus comes from
-   everything else receding, never from painting over the text. */
+/* A practice snippet marks its gap with underscores; make it read as a
+   slot to fill rather than as punctuation. */
+.code-blank {
+	border-radius: 0.3em;
+	padding: 0.1em 0.35em;
+	background: color-mix(in oklch, var(--marker) 16%, transparent);
+	box-shadow: inset 0 -2px 0 color-mix(in oklch, var(--marker) 55%, transparent);
+	color: var(--foreground);
+}
+
+/* The outer element is the reading segment, so it must not clip: the active
+   segment's position bar is drawn outside its left edge. Scrolling a wide
+   diagram is the inner element's job. */
+.mermaid-diagram {
+	margin-block: 1.5em;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-2xl);
+	background: var(--surface);
+}
+
+.mermaid-diagram__scroll {
+	display: flex;
+	justify-content: center;
+	padding: 1.15rem 1rem;
+	overflow-x: auto;
+	border-radius: inherit;
+}
+
+.mermaid-diagram svg {
+	max-width: 100%;
+	height: auto;
+}
+
+/* ------------------------------------------------------- keyboard reading */
+
+/* Spotlight the active section. The active section keeps full contrast
+   (normal colors + foreground bump) and gets a small left position bar;
+   the card's OTHER sections dim instead — focus comes from everything else
+   receding, never from painting over the text. */
 [data-segment] {
-	transition: opacity 200ms ease;
+	transition: opacity 220ms ease;
 }
 
 [data-item-id]:has(.segment-active) [data-segment]:not(.segment-active) {
-	opacity: 0.4;
+	opacity: 0.35;
 }
 
 .segment-active {
 	position: relative;
 }
 
-/* 4px reading-position bar, held a clear gap away from the text */
+/* 4px reading-position bar, held a clear gap away from the text. It sits
+   outside the segment's left edge, so no element carrying [data-segment] may
+   set `overflow` — put the scroll container inside instead. */
 .segment-active::before {
 	content: "";
 	position: absolute;
-	left: -1.1rem;
+	left: -1.15rem;
 	top: 0.2em;
 	bottom: 0.2em;
 	width: 4px;
-	border-radius: 2px;
-	background: var(--primary);
+	border-radius: 999px;
+	background: var(--marker);
 }
 
 p[data-segment].segment-active,
@@ -211,14 +477,19 @@ ol[data-segment].segment-active {
 	color: var(--foreground);
 }
 
-/* Mermaid diagrams */
-.mermaid-diagram {
-	display: flex;
-	justify-content: center;
-	margin-block: 1rem;
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
 }
 
-.mermaid-diagram svg {
-	max-width: 100%;
-	height: auto;
+/* Home wordmark: see App.tsx. contrast() squares up the asset's near-black
+   plate and near-white art so the blend modes knock the plate out exactly. */
+.dark .wordmark {
+	filter: contrast(1.2) !important;
 }

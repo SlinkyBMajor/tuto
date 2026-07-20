@@ -11,6 +11,7 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "tuto.settings";
 
@@ -51,7 +52,7 @@ export function initSettings() {
 	applySettings(loadSettings());
 }
 
-export function SettingsButton({ floating = false }: { floating?: boolean }) {
+export function SettingsButton() {
 	const [settings, setSettings] = useState<Settings>(loadSettings);
 
 	function update(partial: Partial<Settings>) {
@@ -62,27 +63,29 @@ export function SettingsButton({ floating = false }: { floating?: boolean }) {
 	}
 
 	return (
-		<div className={floating ? "fixed top-4 right-4 z-10" : "shrink-0"}>
+		<div className="shrink-0">
 			<Popover>
 				<PopoverTrigger
 					render={
 						<Button
 							variant="ghost"
 							size="icon"
-							className="size-11 rounded-2xl"
+							className="size-9 rounded-xl text-muted-foreground hover:text-foreground"
 							aria-label="Settings"
 						/>
 					}
 				>
-					<HugeiconsIcon icon={Settings02Icon} className="size-6" />
+					<HugeiconsIcon icon={Settings02Icon} className="size-5" />
 				</PopoverTrigger>
-				<PopoverContent align="end" className="w-64">
+				<PopoverContent align="end" className="w-72 text-sm">
 					<PopoverHeader>
-						<PopoverTitle>Settings</PopoverTitle>
+						<PopoverTitle className="text-sm text-muted-foreground">
+							Reading
+						</PopoverTitle>
 					</PopoverHeader>
 					<label
 						htmlFor="setting-serif-font"
-						className="flex items-center justify-between gap-3 text-base"
+						className="flex items-center justify-between gap-3"
 					>
 						<span>Serif font</span>
 						<Switch
@@ -91,43 +94,51 @@ export function SettingsButton({ floating = false }: { floating?: boolean }) {
 							onCheckedChange={(checked) => update({ serifFont: checked })}
 						/>
 					</label>
+					<div className="flex items-center justify-between gap-3">
+						<span>Text size</span>
+						<div className="flex gap-0.5 rounded-full bg-muted p-0.5">
+							{FONT_SIZES.map((size, index) => (
+								<button
+									key={size}
+									type="button"
+									aria-label={`Text size ${size}`}
+									aria-pressed={settings.fontSize === size}
+									onClick={() => update({ fontSize: size })}
+									className={cn(
+										"grid h-7 w-8 place-items-center rounded-full transition-colors",
+										settings.fontSize === size
+											? "bg-card text-foreground shadow-xs"
+											: "text-muted-foreground hover:text-foreground",
+									)}
+								>
+									<span
+										className={
+											["text-[0.7rem]", "text-sm", "text-base"][index] ??
+											"text-base"
+										}
+									>
+										A
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
 					<label
 						htmlFor="setting-code-language"
-						className="flex flex-col gap-2 text-base"
+						className="flex flex-col gap-1.5"
 					>
 						<span>Code example language</span>
 						<Input
 							id="setting-code-language"
 							value={settings.codeLanguage}
 							onChange={(event) => update({ codeLanguage: event.target.value })}
-							placeholder="e.g. JavaScript (topic decides if empty)"
-							className="h-10 rounded-xl"
+							placeholder="e.g. JavaScript"
+							className="h-9 rounded-xl border-border bg-card text-sm"
 						/>
+						<span className="text-xs text-muted-foreground">
+							Leave empty to let the topic decide.
+						</span>
 					</label>
-					<div className="flex items-center justify-between gap-3 text-base">
-						<span>Text size</span>
-						<div className="flex gap-1">
-							{FONT_SIZES.map((size, index) => (
-								<Button
-									key={size}
-									type="button"
-									variant={settings.fontSize === size ? "default" : "outline"}
-									size="sm"
-									className="w-9 rounded-xl"
-									aria-label={`Text size ${size}`}
-									onClick={() => update({ fontSize: size })}
-								>
-									<span
-										className={
-											["text-xs", "text-sm", "text-base"][index] ?? "text-base"
-										}
-									>
-										A
-									</span>
-								</Button>
-							))}
-						</div>
-					</div>
 				</PopoverContent>
 			</Popover>
 		</div>

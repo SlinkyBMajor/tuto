@@ -34,6 +34,8 @@ export const DEMO_LESSONS: LessonSummary[] = [
 
 // Fixture data for UI iteration without model calls: open the app (or the
 // vite dev server) with ?demo to preload the feed with these.
+export const DEMO_TOPIC = "Kafka, from the basics";
+
 export const DEMO_OUTLINE: OutlineItem[] = [
 	{ id: "what-kafka-is", title: "What Kafka is" },
 	{ id: "consuming", title: "Consuming" },
