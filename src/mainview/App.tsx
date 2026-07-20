@@ -3,6 +3,7 @@ import {
 	Award01Icon,
 	CompassIcon,
 	Plant01Icon,
+	RefreshIcon,
 	RocketIcon,
 	SentIcon,
 	SidebarLeft01Icon,
@@ -66,12 +67,20 @@ const OPTION_ICONS: Record<string, IconSvgElement> = {
 // line up on it so the page has one left edge.
 const COLUMN = "mx-auto w-full max-w-[52rem] px-8";
 
+interface TurnOptions {
+	highlightNew?: boolean;
+	pinTop?: boolean;
+}
+
 interface FeedItem {
 	id: number;
 	kind: "card" | "user" | "error";
 	card?: Card;
 	text?: string;
 	selectedOption?: string;
+	// Error items only: replay the turn that produced this panel. Takes the
+	// item's own id so the panel can clear itself before the card lands.
+	retry?: (itemId: number) => void;
 }
 
 let nextId = 0;
@@ -251,9 +260,11 @@ export default function App() {
 		}
 	}
 
+	// Takes a thunk rather than a promise so a failed turn can be replayed from
+	// its error panel — see retryTurn.
 	async function runTurn(
-		request: Promise<TurnResult>,
-		options: { highlightNew?: boolean; pinTop?: boolean } = {},
+		send: () => Promise<TurnResult>,
+		options: TurnOptions = {},
 	) {
 		if (options.pinTop) {
 			// Capture where the new card will start before any re-render, so it
@@ -274,7 +285,7 @@ export default function App() {
 		keyboardFlowRef.current = false;
 		setStreaming(null);
 		try {
-			const result = await request;
+			const result = await send();
 			if (result.ok) {
 				if (result.lessonId) setLessonId(result.lessonId);
 				if (result.outline) setOutline(result.outline);
@@ -288,18 +299,37 @@ export default function App() {
 				}
 				append({ kind: "card", card: result.card }, options);
 			} else {
-				append({ kind: "error", text: result.error });
+				append({
+					kind: "error",
+					text: result.error,
+					retry: (itemId) => retryTurn(itemId, send, options),
+				});
 			}
 		} catch (error) {
 			append({
 				kind: "error",
 				text: error instanceof Error ? error.message : String(error),
+				retry: (itemId) => retryTurn(itemId, send, options),
 			});
 		} finally {
 			turnActiveRef.current = false;
 			setStreaming(null);
 			setLoading(false);
 		}
+	}
+
+	// Replay a failed turn. The bun process only advances its session on a
+	// successful turn, so re-sending the same message resumes from the same
+	// place rather than skipping ahead.
+	function retryTurn(
+		itemId: number,
+		send: () => Promise<TurnResult>,
+		options: TurnOptions,
+	) {
+		if (loading) return;
+		// Drop the panel first so the card lands where the failed one would have
+		setItems((prev) => prev.filter((item) => item.id !== itemId));
+		void runTurn(send, options);
 	}
 
 	function startLesson(topicArg?: string) {
@@ -317,7 +347,7 @@ export default function App() {
 		setTab("lesson");
 		setStarted(true);
 		append({ kind: "user", text: nextTopic });
-		void runTurn(
+		void runTurn(() =>
 			bun.startLesson({
 				topic: nextTopic,
 				language: loadSettings().codeLanguage.trim() || undefined,
@@ -352,12 +382,12 @@ export default function App() {
 		if (!text || loading) return;
 		setInput("");
 		append({ kind: "user", text });
-		void runTurn(bun.sendMessage({ text }));
+		void runTurn(() => bun.sendMessage({ text }));
 	}
 
 	function continueLesson(options: { highlightNew?: boolean } = {}) {
 		if (loading) return;
-		void runTurn(bun.continueLesson({}), { ...options, pinTop: true });
+		void runTurn(() => bun.continueLesson({}), { ...options, pinTop: true });
 	}
 
 	function chooseOption(itemId: number, option: CardOption) {
@@ -367,7 +397,7 @@ export default function App() {
 				item.id === itemId ? { ...item, selectedOption: option.id } : item,
 			),
 		);
-		void runTurn(bun.sendMessage({ text: option.label }));
+		void runTurn(() => bun.sendMessage({ text: option.label }));
 	}
 
 	// Apply the highlight class to the active segment in the DOM. Segments are
@@ -655,6 +685,7 @@ export default function App() {
 										);
 									}
 									if (item.kind === "error") {
+										const retry = item.retry;
 										return (
 											<UICard
 												key={item.id}
@@ -668,6 +699,23 @@ export default function App() {
 														{item.text}
 													</CardTitle>
 												</CardHeader>
+												{retry && (
+													<CardContent>
+														<Button
+															type="button"
+															variant="destructive"
+															size="sm"
+															disabled={loading}
+															onClick={() => retry(item.id)}
+														>
+															<HugeiconsIcon
+																icon={RefreshIcon}
+																data-icon="inline-start"
+															/>
+															Try again
+														</Button>
+													</CardContent>
+												)}
 											</UICard>
 										);
 									}

@@ -5,6 +5,11 @@ import tutorPrompt from "../../prompts/tutor.md";
 import type { Card, Exercise, OutlineItem } from "../shared/types";
 
 const TURN_TIMEOUT_MS = 180_000;
+// Re-asks of a session that replied with something we couldn't parse
+const MAX_CARD_REPAIRS = 2;
+// Re-runs of a call the CLI itself failed
+const MAX_TRANSPORT_RETRIES = 2;
+const RETRY_BACKOFF_MS = 1_000;
 // Haiku is the fast, cheap tier — ideal for a quick term lookup
 const EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
 
@@ -14,17 +19,46 @@ function claudeBinary(): string {
 	return `${process.env.HOME}/.local/bin/claude`;
 }
 
+// The CLI ran and replied, but the reply isn't a card. The raw text is kept so
+// the session that produced it can be asked to re-send it — see repairCard.
+class CardProtocolError extends Error {
+	constructor(
+		message: string,
+		readonly reply: string,
+	) {
+		super(message);
+		this.name = "CardProtocolError";
+	}
+}
+
+// The CLI call itself failed, so there is no reply to work with. `retryable` is
+// false for a timeout: the model may have finished and persisted its turn in
+// the moment before we killed it, and re-running would teach the step twice.
+class ClaudeTransportError extends Error {
+	constructor(
+		message: string,
+		readonly retryable: boolean,
+	) {
+		super(message);
+		this.name = "ClaudeTransportError";
+	}
+}
+
 interface ClaudeResult {
 	result: string;
 	sessionId: string;
 }
 
-async function runClaude(args: string[]): Promise<ClaudeResult> {
+async function spawnClaude(args: string[]): Promise<ClaudeResult> {
 	const proc = Bun.spawn([claudeBinary(), ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const timeout = setTimeout(() => proc.kill(), TURN_TIMEOUT_MS);
+	let timedOut = false;
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		proc.kill();
+	}, TURN_TIMEOUT_MS);
 
 	try {
 		const [stdout, stderr] = await Promise.all([
@@ -32,19 +66,65 @@ async function runClaude(args: string[]): Promise<ClaudeResult> {
 			new Response(proc.stderr).text(),
 		]);
 		const exitCode = await proc.exited;
-		if (exitCode !== 0) {
-			throw new Error(
-				`claude exited with code ${exitCode}: ${stderr.slice(0, 500)}`,
+		if (timedOut) {
+			throw new ClaudeTransportError(
+				`claude timed out after ${TURN_TIMEOUT_MS / 1000}s`,
+				false,
 			);
 		}
-		const envelope = JSON.parse(stdout);
+		if (exitCode !== 0) {
+			throw new ClaudeTransportError(
+				`claude exited with code ${exitCode}: ${stderr.slice(0, 500)}`,
+				true,
+			);
+		}
+		let envelope: { result: string; session_id: string; is_error?: boolean };
+		try {
+			envelope = JSON.parse(stdout);
+		} catch {
+			throw new ClaudeTransportError(
+				`claude produced no JSON envelope: ${stdout.slice(0, 300)}`,
+				true,
+			);
+		}
 		if (envelope.is_error) {
-			throw new Error(`claude returned an error: ${envelope.result}`);
+			throw new ClaudeTransportError(
+				`claude returned an error: ${envelope.result}`,
+				true,
+			);
 		}
 		return { result: envelope.result, sessionId: envelope.session_id };
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+// Retry transient CLI failures (an overloaded API, a dropped connection). Safe
+// even for session-mutating turns: a call that failed this way never got far
+// enough to persist an assistant message, so the re-run starts from the same
+// place. Timeouts are excluded — see ClaudeTransportError.
+async function withTransportRetry<T>(
+	label: string,
+	run: () => Promise<T>,
+): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await run();
+		} catch (error) {
+			const retryable =
+				error instanceof ClaudeTransportError && error.retryable;
+			if (!retryable || attempt >= MAX_TRANSPORT_RETRIES) throw error;
+			console.warn(
+				`${label} failed (attempt ${attempt + 1}/${MAX_TRANSPORT_RETRIES + 1}), retrying:`,
+				error,
+			);
+			await Bun.sleep(RETRY_BACKOFF_MS * 2 ** attempt);
+		}
+	}
+}
+
+function runClaude(args: string[]): Promise<ClaudeResult> {
+	return withTransportRetry("claude call", () => spawnClaude(args));
 }
 
 export interface TutorTurn {
@@ -66,6 +146,7 @@ export async function runTutorTurn(
 	sessionId?: string,
 	options: { fork?: boolean; systemPrompt?: string } = {},
 ): Promise<TutorTurn> {
+	const systemPrompt = options.systemPrompt ?? tutorPrompt;
 	const args = [
 		"-p",
 		"--tools",
@@ -73,7 +154,7 @@ export async function runTutorTurn(
 		"--output-format",
 		"json",
 		"--system-prompt",
-		options.systemPrompt ?? tutorPrompt,
+		systemPrompt,
 	];
 	if (sessionId) {
 		args.push("--resume", sessionId);
@@ -86,8 +167,64 @@ export async function runTutorTurn(
 	args.push(userMessage);
 
 	const turn = await runClaude(args);
-	const reply = parseReply(turn.result);
-	return { ...reply, sessionId: turn.sessionId };
+	try {
+		return { ...parseReply(turn.result), sessionId: turn.sessionId };
+	} catch (error) {
+		if (!(error instanceof CardProtocolError)) throw error;
+		// Repair against the id this turn returned — for a fork that is the
+		// fork's own id, so the base session stays untouched
+		return repairCard(turn.sessionId, error, systemPrompt);
+	}
+}
+
+const CARD_REPAIR_REQUEST =
+	"Your last reply could not be parsed as a card. Send that same card again — the same teaching content, not a new step — as a single valid JSON object and nothing else: no code fences, no text before or after it, and every newline and quote inside a string properly escaped.";
+
+// A reply we can't parse is still in the session, so the fix is to ask that
+// same session to re-send it. This recovers the step the tutor just taught
+// instead of dropping it: a discarded turn is invisible to the learner but the
+// session has already moved past it, so the next Continue teaches the NEXT
+// step and the failed one is silently skipped. Mirrors the guard-and-repair
+// pattern used for broken Mermaid diagrams.
+async function repairCard(
+	sessionId: string,
+	failure: CardProtocolError,
+	systemPrompt: string,
+): Promise<TutorTurn> {
+	let lastFailure = failure;
+	for (let attempt = 0; attempt < MAX_CARD_REPAIRS; attempt++) {
+		console.warn(
+			`unparseable card, repair ${attempt + 1}/${MAX_CARD_REPAIRS}:`,
+			lastFailure.message,
+		);
+		const turn = await runClaude([
+			"-p",
+			"--tools",
+			"",
+			"--output-format",
+			"json",
+			"--system-prompt",
+			systemPrompt,
+			"--resume",
+			sessionId,
+			`${CARD_REPAIR_REQUEST}\n\nThe parser reported: ${lastFailure.message}`,
+		]);
+		try {
+			return { ...parseReply(turn.result), sessionId: turn.sessionId };
+		} catch (error) {
+			if (!(error instanceof CardProtocolError)) throw error;
+			lastFailure = error;
+		}
+	}
+	// Out of attempts: the step is lost and the session has already moved past
+	// it, so log the reply in full — it is the only copy of what was taught
+	console.error(
+		"card unrecoverable after repairs; raw tutor reply was:",
+		lastFailure.reply,
+	);
+	throw new Error(
+		`the tutor's reply could not be parsed after ${MAX_CARD_REPAIRS} repair attempts: ${lastFailure.message}`,
+	);
 }
 
 // Foreground turn with live streaming. Reads Claude's stream-json events,
@@ -102,6 +239,29 @@ export async function runTutorTurnStreaming(
 		onPreview?: (preview: { title: string; body: string }) => void;
 	} = {},
 ): Promise<TutorTurn> {
+	const systemPrompt = options.systemPrompt ?? tutorPrompt;
+	// Retry covers the spawn only. Parsing and repair sit outside it: once a
+	// reply is in hand the turn is committed to the session, and re-running the
+	// message would teach a second step rather than recover this one.
+	const turn = await withTransportRetry("streaming turn", () =>
+		streamTutorTurn(userMessage, sessionId, systemPrompt, options.onPreview),
+	);
+	try {
+		return { ...parseReply(turn.result), sessionId: turn.sessionId };
+	} catch (error) {
+		if (!(error instanceof CardProtocolError)) throw error;
+		return repairCard(turn.sessionId, error, systemPrompt);
+	}
+}
+
+// One streaming attempt: returns the raw reply, exactly as spawnClaude does for
+// the non-streaming path. Card parsing is the caller's job.
+async function streamTutorTurn(
+	userMessage: string,
+	sessionId: string | undefined,
+	systemPrompt: string,
+	onPreview?: (preview: { title: string; body: string }) => void,
+): Promise<ClaudeResult> {
 	const args = [
 		"-p",
 		"--tools",
@@ -111,7 +271,7 @@ export async function runTutorTurnStreaming(
 		"--include-partial-messages",
 		"--verbose",
 		"--system-prompt",
-		options.systemPrompt ?? tutorPrompt,
+		systemPrompt,
 	];
 	if (sessionId) {
 		args.push("--resume", sessionId);
@@ -122,7 +282,14 @@ export async function runTutorTurnStreaming(
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const timeout = setTimeout(() => proc.kill(), TURN_TIMEOUT_MS);
+	let timedOut = false;
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		proc.kill();
+	}, TURN_TIMEOUT_MS);
+	// Drain stderr alongside stdout: left unread, a chatty CLI can fill the pipe
+	// buffer and stall the process until the turn times out
+	const stderrText = new Response(proc.stderr).text().catch(() => "");
 
 	try {
 		let raw = ""; // accumulated assistant text (a partial JSON object)
@@ -132,49 +299,60 @@ export async function runTutorTurnStreaming(
 		const decoder = new TextDecoder();
 		let buffer = "";
 
+		const handleLine = (line: string) => {
+			if (!line) return;
+			let event: {
+				type?: string;
+				event?: { type?: string; delta?: { type?: string; text?: string } };
+				result?: string;
+				session_id?: string;
+				is_error?: boolean;
+			};
+			try {
+				event = JSON.parse(line);
+			} catch {
+				return; // ignore any non-JSON noise
+			}
+			if (
+				event.type === "stream_event" &&
+				event.event?.type === "content_block_delta" &&
+				event.event.delta?.type === "text_delta"
+			) {
+				raw += event.event.delta.text ?? "";
+				onPreview?.(extractPreview(raw));
+			} else if (event.type === "result") {
+				resultText = event.result;
+				resultSession = event.session_id;
+				isError = Boolean(event.is_error);
+			}
+		};
+
 		for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
 			buffer += decoder.decode(chunk, { stream: true });
 			let nl = buffer.indexOf("\n");
 			while (nl !== -1) {
-				const line = buffer.slice(0, nl).trim();
+				handleLine(buffer.slice(0, nl).trim());
 				buffer = buffer.slice(nl + 1);
 				nl = buffer.indexOf("\n");
-				if (!line) continue;
-				let event: {
-					type?: string;
-					event?: { type?: string; delta?: { type?: string; text?: string } };
-					result?: string;
-					session_id?: string;
-					is_error?: boolean;
-				};
-				try {
-					event = JSON.parse(line);
-				} catch {
-					continue; // ignore any non-JSON noise
-				}
-				if (
-					event.type === "stream_event" &&
-					event.event?.type === "content_block_delta" &&
-					event.event.delta?.type === "text_delta"
-				) {
-					raw += event.event.delta.text ?? "";
-					options.onPreview?.(extractPreview(raw));
-				} else if (event.type === "result") {
-					resultText = event.result;
-					resultSession = event.session_id;
-					isError = Boolean(event.is_error);
-				}
 			}
 		}
+		// The whole turn hangs on the final `result` line, which the CLI does not
+		// always terminate with a newline — flush whatever is left
+		handleLine(buffer.trim());
 		await proc.exited;
-		if (isError || !resultText || !resultSession) {
-			const stderr = await new Response(proc.stderr).text().catch(() => "");
-			throw new Error(
-				`streaming turn failed: ${resultText ?? stderr.slice(0, 300)}`,
+		if (timedOut) {
+			throw new ClaudeTransportError(
+				`streaming turn timed out after ${TURN_TIMEOUT_MS / 1000}s`,
+				false,
 			);
 		}
-		const reply = parseReply(resultText);
-		return { ...reply, sessionId: resultSession };
+		if (isError || !resultText || !resultSession) {
+			throw new ClaudeTransportError(
+				`streaming turn failed: ${resultText ?? (await stderrText).slice(0, 300)}`,
+				true,
+			);
+		}
+		return { result: resultText, sessionId: resultSession };
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -323,11 +501,26 @@ function parseReply(text: string): {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
 	if (start === -1 || end <= start) {
-		throw new Error(
+		throw new CardProtocolError(
 			`tutor reply contained no JSON object: ${text.slice(0, 200)}`,
+			text,
 		);
 	}
-	const parsed = JSON.parse(text.slice(start, end + 1));
+	let parsed: {
+		card?: Record<string, unknown>;
+		outline?: unknown;
+		exercise?: unknown;
+	};
+	try {
+		parsed = JSON.parse(text.slice(start, end + 1));
+	} catch (error) {
+		// Usually a raw newline or an unescaped quote inside a body string, or a
+		// reply that got cut off before its closing brace
+		throw new CardProtocolError(
+			`tutor reply was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+			text,
+		);
+	}
 	const card = parsed.card;
 	if (
 		!card ||
@@ -337,8 +530,9 @@ function parseReply(text: string): {
 		typeof card.title !== "string" ||
 		typeof card.body !== "string"
 	) {
-		throw new Error(
+		throw new CardProtocolError(
 			`tutor reply did not match the card protocol: ${text.slice(0, 200)}`,
+			text,
 		);
 	}
 	return {
