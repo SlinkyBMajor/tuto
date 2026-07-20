@@ -99,6 +99,10 @@ export type CheckResult =
 	| { ok: true; correct: boolean; explanation: string }
 	| { ok: false; error: string };
 
+export type ExplainResult =
+	| { ok: true; explanation: string }
+	| { ok: false; error: string };
+
 export type MermaidFixResult =
 	| { ok: true; code: string }
 	| { ok: false; error: string };
@@ -125,6 +129,10 @@ export type TutoRPC = {
 			checkAnswer: {
 				params: { exercise: Exercise; userAnswer: string | null };
 				response: CheckResult;
+			};
+			explainTerm: {
+				params: { term: string; context: string };
+				response: ExplainResult;
 			};
 			getNotes: {
 				params: Record<string, never>;
@@ -155,6 +163,9 @@ export type TutoRPC = {
 	}>;
 	webview: RPCSchema<{
 		requests: Record<string, never>;
-		messages: Record<string, never>;
+		messages: {
+			// Live preview of the card being generated, pushed as it streams
+			streamCard: { title: string; body: string };
+		};
 	}>;
 };

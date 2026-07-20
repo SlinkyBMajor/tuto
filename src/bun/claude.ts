@@ -1,9 +1,12 @@
 import exerciseCheckPrompt from "../../prompts/exercise-check.md";
+import explainPrompt from "../../prompts/explain.md";
 import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
 import tutorPrompt from "../../prompts/tutor.md";
 import type { Card, Exercise, OutlineItem } from "../shared/types";
 
 const TURN_TIMEOUT_MS = 180_000;
+// Haiku is the fast, cheap tier — ideal for a quick term lookup
+const EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
 
 function claudeBinary(): string {
 	const found = Bun.which("claude");
@@ -85,6 +88,170 @@ export async function runTutorTurn(
 	const turn = await runClaude(args);
 	const reply = parseReply(turn.result);
 	return { ...reply, sessionId: turn.sessionId };
+}
+
+// Foreground turn with live streaming. Reads Claude's stream-json events,
+// surfaces a title/body preview from the partial JSON as it arrives, and
+// parses the authoritative card from the final result line. Not used for
+// prefetch (that runs in the background and is often discarded).
+export async function runTutorTurnStreaming(
+	userMessage: string,
+	sessionId: string | undefined,
+	options: {
+		systemPrompt?: string;
+		onPreview?: (preview: { title: string; body: string }) => void;
+	} = {},
+): Promise<TutorTurn> {
+	const args = [
+		"-p",
+		"--tools",
+		"",
+		"--output-format",
+		"stream-json",
+		"--include-partial-messages",
+		"--verbose",
+		"--system-prompt",
+		options.systemPrompt ?? tutorPrompt,
+	];
+	if (sessionId) {
+		args.push("--resume", sessionId);
+	}
+	args.push(userMessage);
+
+	const proc = Bun.spawn([claudeBinary(), ...args], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const timeout = setTimeout(() => proc.kill(), TURN_TIMEOUT_MS);
+
+	try {
+		let raw = ""; // accumulated assistant text (a partial JSON object)
+		let resultText: string | undefined;
+		let resultSession: string | undefined;
+		let isError = false;
+		const decoder = new TextDecoder();
+		let buffer = "";
+
+		for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+			buffer += decoder.decode(chunk, { stream: true });
+			let nl = buffer.indexOf("\n");
+			while (nl !== -1) {
+				const line = buffer.slice(0, nl).trim();
+				buffer = buffer.slice(nl + 1);
+				nl = buffer.indexOf("\n");
+				if (!line) continue;
+				let event: {
+					type?: string;
+					event?: { type?: string; delta?: { type?: string; text?: string } };
+					result?: string;
+					session_id?: string;
+					is_error?: boolean;
+				};
+				try {
+					event = JSON.parse(line);
+				} catch {
+					continue; // ignore any non-JSON noise
+				}
+				if (
+					event.type === "stream_event" &&
+					event.event?.type === "content_block_delta" &&
+					event.event.delta?.type === "text_delta"
+				) {
+					raw += event.event.delta.text ?? "";
+					options.onPreview?.(extractPreview(raw));
+				} else if (event.type === "result") {
+					resultText = event.result;
+					resultSession = event.session_id;
+					isError = Boolean(event.is_error);
+				}
+			}
+		}
+		await proc.exited;
+		if (isError || !resultText || !resultSession) {
+			const stderr = await new Response(proc.stderr).text().catch(() => "");
+			throw new Error(
+				`streaming turn failed: ${resultText ?? stderr.slice(0, 300)}`,
+			);
+		}
+		const reply = parseReply(resultText);
+		return { ...reply, sessionId: resultSession };
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+// Pull a display preview (card title + body) out of the still-growing JSON.
+// Cosmetic only — the final render uses the fully parsed result.
+function extractPreview(raw: string): { title: string; body: string } {
+	return {
+		title: extractJsonString(raw, "title") ?? "",
+		body: extractJsonString(raw, "body") ?? "",
+	};
+}
+
+// Read the (possibly unterminated) value of a "key": "..." pair, unescaping as
+// it goes and stopping at the end of the string or the end of what's arrived.
+// Whitespace around the colon varies by model, so match it tolerantly.
+function extractJsonString(raw: string, key: string): string | undefined {
+	const opening = new RegExp(`"${key}"\\s*:\\s*"`).exec(raw);
+	if (!opening) return undefined;
+	let i = opening.index + opening[0].length;
+	let out = "";
+	while (i < raw.length) {
+		const ch = raw[i];
+		if (ch === '"') break; // closing quote
+		if (ch === "\\") {
+			const next = raw[i + 1];
+			if (next === undefined) break; // escape split across chunks
+			if (next === "u") {
+				const hex = raw.slice(i + 2, i + 6);
+				if (hex.length < 4) break; // wait for the rest
+				out += String.fromCharCode(Number.parseInt(hex, 16));
+				i += 6;
+				continue;
+			}
+			out += UNESCAPE[next] ?? next;
+			i += 2;
+			continue;
+		}
+		out += ch;
+		i++;
+	}
+	return out;
+}
+
+const UNESCAPE: Record<string, string> = {
+	n: "\n",
+	t: "\t",
+	r: "\r",
+	'"': '"',
+	"\\": "\\",
+	"/": "/",
+};
+
+// Explain one highlighted term in its lesson context. Stateless and on the
+// fast Haiku tier — a quick lookup that never touches the lesson session.
+export async function explainTerm(
+	term: string,
+	context: string,
+): Promise<string> {
+	const { result } = await runClaude([
+		"-p",
+		// Skip CLAUDE.md/skills/hooks/MCP startup — none are needed here and
+		// they add latency and (occasionally) multi-second MCP-connect stalls
+		"--safe-mode",
+		"--tools",
+		"",
+		"--output-format",
+		"json",
+		"--no-session-persistence",
+		"--model",
+		EXPLAIN_MODEL,
+		"--system-prompt",
+		explainPrompt,
+		`Term to explain: ${term}\n\nContext it appeared in:\n${context}`,
+	]);
+	return result.trim();
 }
 
 // Stateless one-shot repair of a Mermaid diagram that failed to parse.

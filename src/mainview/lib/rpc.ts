@@ -5,6 +5,13 @@ type BridgeRpc = ReturnType<typeof Electroview.defineRPC<TutoRPC>>;
 type BunRequests = BridgeRpc["request"];
 type BunMessages = BridgeRpc["send"];
 
+// The current subscriber for streaming card previews (the mounted App).
+type StreamHandler = (preview: { title: string; body: string }) => void;
+let streamHandler: StreamHandler | null = null;
+export function onStreamCard(handler: StreamHandler | null) {
+	streamHandler = handler;
+}
+
 // Electroview writes to bridge globals that only exist inside the app shell —
 // in a plain browser (vite dev server) construction throws, so guard it and
 // fail on use instead of on import. Demo mode (?demo) can then still render.
@@ -14,7 +21,9 @@ function createBridge(): BridgeRpc | undefined {
 			maxRequestTime: 300_000,
 			handlers: {
 				requests: {},
-				messages: {},
+				messages: {
+					streamCard: (preview) => streamHandler?.(preview),
+				},
 			},
 		});
 		const electroview = new Electroview({ rpc });

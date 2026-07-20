@@ -1,6 +1,7 @@
 import { BrowserView, BrowserWindow, Updater } from "electrobun/bun";
 import type {
 	CheckResult,
+	ExplainResult,
 	MermaidFixResult,
 	TurnResult,
 	TutoRPC,
@@ -8,8 +9,10 @@ import type {
 import {
 	checkExerciseAnswer,
 	composeSystemPrompt,
+	explainTerm,
 	fixMermaidDiagram,
 	runTutorTurn,
+	runTutorTurnStreaming,
 	type TutorTurn,
 } from "./claude";
 import { NotesDoc } from "./notes";
@@ -41,6 +44,12 @@ let lessonSessionId: string | undefined;
 let lessonLanguage: string | undefined;
 let lessonSystemPrompt = composeSystemPrompt();
 const notes = new NotesDoc();
+
+// Push a streaming card preview to the webview. Defined against the typed rpc
+// object below; safe to call once the window has wired up its transport.
+function sendPreview(preview: { title: string; body: string }) {
+	rpc.send.streamCard(preview);
+}
 
 // Speculative prefetch: after each step card we immediately ask for the next
 // one in a FORKED session. Continue adopts the fork (instant card); any other
@@ -105,9 +114,12 @@ async function tutorTurn(
 	// no longer contain this exchange, so drop it
 	prefetch = undefined;
 	try {
+		// Foreground turns stream a live preview to the webview; prefetch
+		// (startPrefetch) stays non-streaming since it runs in the background.
 		return finishTurn(
-			await runTutorTurn(message, lessonSessionId, {
+			await runTutorTurnStreaming(message, lessonSessionId, {
 				systemPrompt: lessonSystemPrompt,
+				onPreview: sendPreview,
 			}),
 		);
 	} catch (error) {
@@ -181,6 +193,20 @@ const rpc = BrowserView.defineRPC<TutoRPC>({
 							checkError instanceof Error
 								? checkError.message
 								: String(checkError),
+					};
+				}
+			},
+			explainTerm: async ({ term, context }): Promise<ExplainResult> => {
+				try {
+					return { ok: true, explanation: await explainTerm(term, context) };
+				} catch (explainError) {
+					console.error("explain term failed:", explainError);
+					return {
+						ok: false,
+						error:
+							explainError instanceof Error
+								? explainError.message
+								: String(explainError),
 					};
 				}
 			},

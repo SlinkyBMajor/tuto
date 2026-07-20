@@ -8,7 +8,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import { CardMarkdown } from "@/components/card-markdown";
+import { ExplainSelection } from "@/components/explain";
 import { LessonLibrary } from "@/components/home";
 import { NotesPanel } from "@/components/notes";
 import { type PracticeItem, PracticePanel } from "@/components/practice";
@@ -30,7 +32,7 @@ import {
 	DEMO_NOTES,
 	DEMO_OUTLINE,
 } from "@/lib/demo";
-import { bun } from "@/lib/rpc";
+import { bun, onStreamCard } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import type {
 	Card,
@@ -74,7 +76,7 @@ export default function App() {
 			: [],
 	);
 	const [loading, setLoading] = useState(false);
-	const [started, setStarted] = useState(demoMode);
+	const [started, setStarted] = useState(demoMode || params.has("demostream"));
 	const [input, setInput] = useState("");
 	const [outline, setOutline] = useState<OutlineItem[] | null>(
 		demoMode ? DEMO_OUTLINE : null,
@@ -98,6 +100,21 @@ export default function App() {
 	const [topic, setTopic] = useState("");
 	// Bumped when returning home so the lesson library re-fetches
 	const [homeRefresh, setHomeRefresh] = useState(0);
+	// Live preview of the card currently being generated (streaming)
+	const [streaming, setStreaming] = useState<{
+		title: string;
+		body: string;
+	} | null>(
+		params.has("demostream")
+			? {
+					title: "Kafka is a log, not a queue",
+					body: "A traditional queue **deletes** a message once it's read. Kafka keeps every message for a set time, so many consumers can read the same stream at their own pace.\n\nEach consumer just remembers its own position",
+				}
+			: null,
+	);
+	// True only while a foreground turn is in flight, so late stream
+	// messages can't resurrect a preview after the real card lands
+	const turnActiveRef = useRef(false);
 	// Keyboard reading position: which segment of which card is highlighted
 	const [highlight, setHighlight] = useState<{
 		itemId: number;
@@ -109,11 +126,22 @@ export default function App() {
 	// default scroll-to-bottom
 	const keyboardFlowRef = useRef(false);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: items/loading are intentional triggers — scroll to bottom whenever the feed grows or the skeleton appears
+	// biome-ignore lint/correctness/useExhaustiveDependencies: items/loading/streaming are intentional triggers — scroll to bottom as the feed grows, the skeleton appears, or the streaming preview extends
 	useEffect(() => {
 		if (keyboardFlowRef.current) return;
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [items, loading]);
+	}, [items, loading, streaming]);
+
+	// Opening the Lesson tab lands on the latest card (the panel may have been
+	// unmounted while another tab was active, so wait a frame for it to render).
+	// Scroll the window fully down so the last card clears the fixed input bar.
+	useEffect(() => {
+		if (tab !== "lesson") return;
+		const frame = requestAnimationFrame(() => {
+			window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [tab]);
 
 	// Auto-save the lesson snapshot whenever persistable state changes. The
 	// bun process merges session id, language, and timestamps; errors and the
@@ -147,6 +175,16 @@ export default function App() {
 		void bun.saveLesson({ snapshot }).catch(() => {});
 	}, [lessonId, started, topic, outline, currentConceptId, items, practice]);
 
+	// Receive streaming card previews from the bun process. Ignore any that
+	// arrive outside a live turn so a stale delta can't reappear after the
+	// finished card has been appended.
+	useEffect(() => {
+		onStreamCard((preview) => {
+			if (turnActiveRef.current) setStreaming(preview);
+		});
+		return () => onStreamCard(null);
+	}, []);
+
 	function append(
 		item: Omit<FeedItem, "id">,
 		options: { highlightNew?: boolean } = {},
@@ -167,6 +205,8 @@ export default function App() {
 		options: { highlightNew?: boolean } = {},
 	) {
 		setLoading(true);
+		turnActiveRef.current = true;
+		setStreaming(null);
 		try {
 			const result = await request;
 			if (result.ok) {
@@ -190,6 +230,8 @@ export default function App() {
 				text: error instanceof Error ? error.message : String(error),
 			});
 		} finally {
+			turnActiveRef.current = false;
+			setStreaming(null);
 			setLoading(false);
 		}
 	}
@@ -388,6 +430,7 @@ export default function App() {
 
 	return (
 		<main className="mx-auto flex min-h-screen w-full max-w-[50rem] flex-col p-6">
+			<ExplainSelection topic={topic} />
 			<Tabs
 				value={tab}
 				onValueChange={(value) => setTab(String(value))}
@@ -495,7 +538,10 @@ export default function App() {
 											{item.card?.title}
 										</CardTitle>
 									</CardHeader>
-									<CardContent className="prose prose-lg max-w-none dark:prose-invert">
+									<CardContent
+										data-explainable
+										className="prose prose-lg max-w-none dark:prose-invert"
+									>
 										<CardMarkdown body={item.card?.body ?? ""} />
 									</CardContent>
 									{suggestions && suggestions.length > 0 && (
@@ -571,16 +617,32 @@ export default function App() {
 								</UICard>
 							);
 						})}
-						{loading && (
-							<UICard className="rounded-3xl">
-								<CardHeader>
-									<Skeleton className="h-7 w-2/5" />
-								</CardHeader>
-								<CardContent className="space-y-3">
-									<Skeleton className="h-5 w-full" />
-									<Skeleton className="h-5 w-4/5" />
+						{streaming ? (
+							<UICard className="rounded-3xl shadow-sm">
+								{streaming.title && (
+									<CardHeader>
+										<CardTitle className="text-2xl">
+											{streaming.title}
+										</CardTitle>
+									</CardHeader>
+								)}
+								<CardContent className="prose prose-lg max-w-none dark:prose-invert">
+									<Markdown>{streaming.body}</Markdown>
+									<span className="ml-0.5 inline-block h-5 w-2 translate-y-0.5 animate-pulse bg-primary align-baseline" />
 								</CardContent>
 							</UICard>
+						) : (
+							loading && (
+								<UICard className="rounded-3xl">
+									<CardHeader>
+										<Skeleton className="h-7 w-2/5" />
+									</CardHeader>
+									<CardContent className="space-y-3">
+										<Skeleton className="h-5 w-full" />
+										<Skeleton className="h-5 w-4/5" />
+									</CardContent>
+								</UICard>
+							)
 						)}
 						<div ref={bottomRef} />
 					</div>
