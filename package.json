@@ -11,6 +11,7 @@
 		"build": "vite build && electrobun build",
 		"typecheck": "tsc --noEmit",
 		"smoke": "bun run scripts/tutor-smoke.ts",
+		"test:parse": "bun run scripts/card-parse-test.ts",
 		"lint": "biome check .",
 		"format": "biome format --write ."
 	},

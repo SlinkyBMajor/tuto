@@ -116,9 +116,14 @@ async function tutorTurn(
 	try {
 		// Foreground turns stream a live preview to the webview; prefetch
 		// (startPrefetch) stays non-streaming since it runs in the background.
+		// Fork whenever we're resuming: as with prefetch, the lesson session is
+		// advanced (finishTurn) only once a card is successfully adopted, so a
+		// reply we can't use can't skip the next step. The first turn of a
+		// lesson has no session to fork.
 		return finishTurn(
 			await runTutorTurnStreaming(message, lessonSessionId, {
 				systemPrompt: lessonSystemPrompt,
+				fork: Boolean(lessonSessionId),
 				onPreview: sendPreview,
 			}),
 		);

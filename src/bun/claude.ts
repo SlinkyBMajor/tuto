@@ -180,12 +180,13 @@ export async function runTutorTurn(
 const CARD_REPAIR_REQUEST =
 	"Your last reply could not be parsed as a card. Send that same card again — the same teaching content, not a new step — as a single valid JSON object and nothing else: no code fences, no text before or after it, and every newline and quote inside a string properly escaped.";
 
-// A reply we can't parse is still in the session, so the fix is to ask that
-// same session to re-send it. This recovers the step the tutor just taught
-// instead of dropping it: a discarded turn is invisible to the learner but the
-// session has already moved past it, so the next Continue teaches the NEXT
-// step and the failed one is silently skipped. Mirrors the guard-and-repair
-// pattern used for broken Mermaid diagrams.
+// A reply we can't parse is still in the (forked) session, so the first fix is
+// to ask that same session to re-send it — recovering the step the tutor just
+// taught rather than dropping it. If the re-sends still never parse, salvage
+// the title and body from the raw reply instead of losing the step (see the
+// tail of this function). The caller forks the turn, so even an unrecoverable
+// reply advances only the throwaway branch and a retry re-teaches this step.
+// Mirrors the guard-and-repair pattern used for broken Mermaid diagrams.
 async function repairCard(
 	sessionId: string,
 	failure: CardProtocolError,
@@ -216,8 +217,21 @@ async function repairCard(
 			lastFailure = error;
 		}
 	}
-	// Out of attempts: the step is lost and the session has already moved past
-	// it, so log the reply in full — it is the only copy of what was taught
+	// Out of clean re-sends. Rather than drop the step, salvage its title and
+	// body straight from the raw reply (the same tolerant read the streaming
+	// preview uses) and adopt that. The learner keeps the content they watched
+	// stream in, and since the session really did teach this step, the next
+	// Continue still advances correctly. Structured extras (notes routing,
+	// exercise) can't be recovered this way and are left off the salvaged card.
+	const salvaged = salvageCard(failure.reply) ?? salvageCard(lastFailure.reply);
+	if (salvaged) {
+		console.warn(
+			"card unparseable after repairs; salvaged title and body from the raw reply",
+		);
+		return { card: salvaged, sessionId };
+	}
+	// Nothing recoverable — not even a title and body. Log the reply in full;
+	// it is the only copy of what was taught, and the turn surfaces as an error.
 	console.error(
 		"card unrecoverable after repairs; raw tutor reply was:",
 		lastFailure.reply,
@@ -236,6 +250,9 @@ export async function runTutorTurnStreaming(
 	sessionId: string | undefined,
 	options: {
 		systemPrompt?: string;
+		// Fork the resumed session so this turn advances only a throwaway branch;
+		// the caller adopts the branch (finishTurn) only on a card it can use.
+		fork?: boolean;
 		onPreview?: (preview: { title: string; body: string }) => void;
 	} = {},
 ): Promise<TutorTurn> {
@@ -244,7 +261,13 @@ export async function runTutorTurnStreaming(
 	// reply is in hand the turn is committed to the session, and re-running the
 	// message would teach a second step rather than recover this one.
 	const turn = await withTransportRetry("streaming turn", () =>
-		streamTutorTurn(userMessage, sessionId, systemPrompt, options.onPreview),
+		streamTutorTurn(
+			userMessage,
+			sessionId,
+			systemPrompt,
+			Boolean(options.fork),
+			options.onPreview,
+		),
 	);
 	try {
 		return { ...parseReply(turn.result), sessionId: turn.sessionId };
@@ -260,6 +283,7 @@ async function streamTutorTurn(
 	userMessage: string,
 	sessionId: string | undefined,
 	systemPrompt: string,
+	fork: boolean,
 	onPreview?: (preview: { title: string; body: string }) => void,
 ): Promise<ClaudeResult> {
 	const args = [
@@ -275,6 +299,10 @@ async function streamTutorTurn(
 	];
 	if (sessionId) {
 		args.push("--resume", sessionId);
+		// Fork a foreground turn the same way prefetch does: an unrecoverable
+		// reply then advances only the throwaway branch, so the lesson session
+		// stays put and a retry re-teaches this step instead of skipping it.
+		if (fork) args.push("--fork-session");
 	}
 	args.push(userMessage);
 
@@ -407,6 +435,60 @@ const UNESCAPE: Record<string, string> = {
 	"/": "/",
 };
 
+// Re-escape raw control characters that appear inside JSON string literals. An
+// unescaped newline in a card body is the most common reason a reply fails to
+// parse; only characters inside strings are rewritten, so already-valid JSON is
+// returned byte-for-byte unchanged. Cannot fix an unescaped quote (it hides
+// where the string ends) — those replies still fail and are left to repair.
+function escapeControlCharsInStrings(json: string): string {
+	let out = "";
+	let inString = false;
+	let escaped = false;
+	for (const ch of json) {
+		if (escaped) {
+			out += ch;
+			escaped = false;
+		} else if (ch === "\\") {
+			out += ch;
+			escaped = true;
+		} else if (ch === '"') {
+			inString = !inString;
+			out += ch;
+		} else if (inString && ch.charCodeAt(0) < 0x20) {
+			const code = ch.charCodeAt(0);
+			out +=
+				ch === "\n"
+					? "\\n"
+					: ch === "\r"
+						? "\\r"
+						: ch === "\t"
+							? "\\t"
+							: `\\u${code.toString(16).padStart(4, "0")}`;
+		} else {
+			out += ch;
+		}
+	}
+	return out;
+}
+
+// Last-resort recovery once strict parse, tolerant parse, and repair have all
+// failed: pull the card's title and body out of the raw reply with the same
+// tolerant reader the streaming preview uses. A reply too broken to yield even
+// those returns undefined and becomes a surfaced error.
+export function salvageCard(raw: string): Card | undefined {
+	const title = extractJsonString(raw, "title")?.trim();
+	const body = extractJsonString(raw, "body")?.trim();
+	if (!title || !body) return undefined;
+	const type = extractJsonString(raw, "type");
+	const conceptId = extractJsonString(raw, "conceptId")?.trim();
+	return {
+		type: type === "question" || type === "recap" ? type : "step",
+		title,
+		body,
+		conceptId: conceptId || undefined,
+	};
+}
+
 // Explain one highlighted term in its lesson context. Stateless and on the
 // fast Haiku tier — a quick lookup that never touches the lesson session.
 export async function explainTerm(
@@ -500,7 +582,7 @@ export async function checkExerciseAnswer(
 
 // The tutor is instructed to reply with bare JSON, but models occasionally
 // wrap it in code fences or stray prose — extract the outermost object.
-function parseReply(text: string): {
+export function parseReply(text: string): {
 	card: Card;
 	outline?: OutlineItem[];
 	exercise?: Exercise;
@@ -513,20 +595,28 @@ function parseReply(text: string): {
 			text,
 		);
 	}
+	const slice = text.slice(start, end + 1);
 	let parsed: {
 		card?: Record<string, unknown>;
 		outline?: unknown;
 		exercise?: unknown;
 	};
 	try {
-		parsed = JSON.parse(text.slice(start, end + 1));
-	} catch (error) {
-		// Usually a raw newline or an unescaped quote inside a body string, or a
-		// reply that got cut off before its closing brace
-		throw new CardProtocolError(
-			`tutor reply was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-			text,
-		);
+		parsed = JSON.parse(slice);
+	} catch (strictError) {
+		// The usual break is a raw newline or tab left unescaped inside the body
+		// string; re-escaping control characters inside string literals recovers
+		// the whole card here, with full fidelity and no model round-trip. A
+		// genuinely truncated reply, or an unescaped quote we can't place, still
+		// fails and falls through to repairCard.
+		try {
+			parsed = JSON.parse(escapeControlCharsInStrings(slice));
+		} catch {
+			throw new CardProtocolError(
+				`tutor reply was not valid JSON: ${strictError instanceof Error ? strictError.message : String(strictError)}`,
+				text,
+			);
+		}
 	}
 	const card = parsed.card;
 	if (

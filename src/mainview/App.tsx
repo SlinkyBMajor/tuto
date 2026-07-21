@@ -318,9 +318,10 @@ export default function App() {
 		}
 	}
 
-	// Replay a failed turn. The bun process only advances its session on a
-	// successful turn, so re-sending the same message resumes from the same
-	// place rather than skipping ahead.
+	// Replay a failed turn. Foreground turns run against a forked session that
+	// the bun process adopts only on a card it can use, so a failed turn leaves
+	// the lesson session where it was — re-sending the same message re-teaches
+	// this step rather than skipping ahead to the next one.
 	function retryTurn(
 		itemId: number,
 		send: () => Promise<TurnResult>,
