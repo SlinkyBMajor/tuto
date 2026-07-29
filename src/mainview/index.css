@@ -450,15 +450,13 @@ html.font-xlarge {
    the card's OTHER sections dim instead — focus comes from everything else
    receding, never from painting over the text. */
 [data-segment] {
+	/* The position bar below is drawn outside the segment's own edge */
+	position: relative;
 	transition: opacity 220ms ease;
 }
 
 [data-item-id]:has(.segment-active) [data-segment]:not(.segment-active) {
 	opacity: 0.35;
-}
-
-.segment-active {
-	position: relative;
 }
 
 /* 4px reading-position bar, held a clear gap away from the text. It sits
@@ -473,6 +471,28 @@ html.font-xlarge {
 	width: 4px;
 	border-radius: 999px;
 	background: var(--marker);
+}
+
+/* Pointing at a section previews what clicking it commits to: the rest of the
+   card recedes the same way, and a faint bar shows where the marker would
+   land. The reading position wins, so a card that has one ignores hover. */
+[data-item-id]:not(:has(.segment-active)):has([data-segment]:hover)
+	[data-segment]:not(:hover) {
+	opacity: 0.5;
+}
+
+/* :not(:has(…)) keeps the preview on the innermost section when markdown
+   nests one segment in another — a paragraph inside a list item. */
+[data-item-id]:not(:has(.segment-active))
+	[data-segment]:hover:not(:has([data-segment]:hover))::before {
+	content: "";
+	position: absolute;
+	left: -1.15rem;
+	top: 0.2em;
+	bottom: 0.2em;
+	width: 4px;
+	border-radius: 999px;
+	background: color-mix(in oklch, var(--marker) 32%, transparent);
 }
 
 p[data-segment].segment-active,

@@ -10,7 +10,12 @@ import {
 	Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import {
+	type MouseEvent as ReactMouseEvent,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import Markdown from "react-markdown";
 import textLogo from "@/assets/text-logo.png";
 import { AppRail } from "@/components/app-rail";
@@ -85,6 +90,13 @@ interface FeedItem {
 
 let nextId = 0;
 
+// Reading sections are read from the DOM rather than tracked in React state, so
+// markdown internals stay presentation-only — see the highlight effect.
+function segmentsOf(itemId: number): Element[] {
+	const card = document.querySelector(`[data-item-id="${itemId}"]`);
+	return card ? Array.from(card.querySelectorAll("[data-segment]")) : [];
+}
+
 export default function App() {
 	const [items, setItems] = useState<FeedItem[]>(() =>
 		demoMode
@@ -143,11 +155,14 @@ export default function App() {
 	// True only while a foreground turn is in flight, so late stream
 	// messages can't resurrect a preview after the real card lands
 	const turnActiveRef = useRef(false);
-	// Keyboard reading position: which segment of which card is highlighted
+	// Reading position: which segment of which card is highlighted
 	const [highlight, setHighlight] = useState<{
 		itemId: number;
 		index: number;
 	} | null>(null);
+	// Bumped each time reading mode is entered from nothing, to flash the
+	// arrow-key hint
+	const [hintNonce, setHintNonce] = useState(0);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	// The content pane scrolls, not the window — every scroll position in
 	// this file is relative to this element.
@@ -401,6 +416,38 @@ export default function App() {
 		void runTurn(() => bun.sendMessage({ text: option.label }));
 	}
 
+	// Move the reading position. Entering reading mode from nothing flashes the
+	// arrow-key hint; stepping once inside it does not. Reading also pins the
+	// view: the feed must not yank back to the bottom under someone who has
+	// stepped up into an earlier card.
+	function moveHighlight(
+		itemId: number,
+		index: number,
+		options: { scroll?: boolean } = {},
+	) {
+		if (!highlight) setHintNonce((nonce) => nonce + 1);
+		if (options.scroll === false) skipHighlightScrollRef.current = true;
+		keyboardFlowRef.current = true;
+		setHighlight({ itemId, index });
+	}
+
+	// Click a section to put the reading position there and step on from it with
+	// the arrow keys. Skipped while text is selected, so picking out a phrase to
+	// explain doesn't also move the marker.
+	function selectSegment(
+		itemId: number,
+		event: ReactMouseEvent<HTMLDivElement>,
+	) {
+		if (window.getSelection()?.isCollapsed === false) return;
+		const target = event.target as HTMLElement;
+		if (target.closest("button, a")) return;
+		const segment = target.closest("[data-segment]");
+		if (!segment) return;
+		const index = segmentsOf(itemId).indexOf(segment);
+		// The section is already under the cursor, so don't scroll to it
+		if (index >= 0) moveHighlight(itemId, index, { scroll: false });
+	}
+
 	// Apply the highlight class to the active segment in the DOM. Segments are
 	// queried rather than tracked in React state so markdown internals stay
 	// presentation-only.
@@ -423,11 +470,16 @@ export default function App() {
 		}
 	}, [highlight]);
 
-	// ArrowDown steps through the latest card section by section; past the
-	// last one it acts as Continue. ArrowUp steps back.
+	// The arrow keys walk the whole feed section by section, crossing card
+	// boundaries in both directions; past the last section of the newest card
+	// ArrowDown acts as Continue. Escape leaves reading mode.
 	useEffect(() => {
 		function onKeyDown(event: KeyboardEvent) {
 			if (tab !== "lesson") return;
+			if (event.key === "Escape") {
+				setHighlight(null);
+				return;
+			}
 			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
 			const target = event.target as HTMLElement | null;
 			if (
@@ -436,36 +488,66 @@ export default function App() {
 			) {
 				return;
 			}
-			const lastCard = items.findLast((item) => item.kind === "card");
-			if (!lastCard) return;
+			const cards = items.filter((item) => item.kind === "card");
+			if (cards.length === 0) return;
 			event.preventDefault();
 
-			const cardEl = document.querySelector(`[data-item-id="${lastCard.id}"]`);
-			const count = cardEl?.querySelectorAll("[data-segment]").length ?? 0;
+			const cardIndex = highlight
+				? cards.findIndex((card) => card.id === highlight.itemId)
+				: -1;
+
+			// Not reading yet (or the highlighted card is gone): enter on the
+			// newest card, at the end of it when arriving from below.
+			if (!highlight || cardIndex < 0) {
+				const newest = cards[cards.length - 1];
+				const count = newest ? segmentsOf(newest.id).length : 0;
+				if (!newest || count === 0) return;
+				moveHighlight(newest.id, event.key === "ArrowUp" ? count - 1 : 0);
+				return;
+			}
+
+			const current = cards[cardIndex];
+			if (!current) return;
+			const count = segmentsOf(current.id).length;
 			if (count === 0) return;
 
 			if (event.key === "ArrowUp") {
-				if (highlight?.itemId === lastCard.id && highlight.index > 0) {
-					setHighlight({ itemId: lastCard.id, index: highlight.index - 1 });
-				} else {
-					setHighlight(null);
+				if (highlight.index > 0) {
+					moveHighlight(current.id, highlight.index - 1);
+					return;
+				}
+				// At the top of a card: continue into the end of the one before
+				// it. On the very first card there is nowhere left to go, so the
+				// position stays where it is.
+				const previous = cards[cardIndex - 1];
+				const previousCount = previous ? segmentsOf(previous.id).length : 0;
+				if (previous && previousCount > 0) {
+					moveHighlight(previous.id, previousCount - 1);
 				}
 				return;
 			}
 
-			if (highlight?.itemId !== lastCard.id) {
-				setHighlight({ itemId: lastCard.id, index: 0 });
-			} else if (highlight.index + 1 < count) {
-				setHighlight({ itemId: lastCard.id, index: highlight.index + 1 });
-			} else if (
+			if (highlight.index + 1 < count) {
+				moveHighlight(current.id, highlight.index + 1);
+				return;
+			}
+
+			// Past a card's last section: step into the next card if the feed
+			// already holds one...
+			const next = cards[cardIndex + 1];
+			if (next) {
+				if (segmentsOf(next.id).length > 0) moveHighlight(next.id, 0);
+				return;
+			}
+
+			// ...otherwise advance the lesson (unanswered question cards want an
+			// answer, not a continue). The highlight stays on the current section
+			// while the next card loads, then moves to its first section.
+			if (
 				!loading &&
-				lastCard.card?.type !== "recap" &&
-				!(lastCard.card?.type === "question" && !lastCard.selectedOption)
+				current.card?.type !== "recap" &&
+				!(current.card?.type === "question" && !current.selectedOption)
 			) {
-				// Past the last section: advance the lesson (unanswered question
-				// cards want an answer, not a continue). The highlight stays on
-				// the current section while the next card loads, then moves to
-				// the new card's first section.
 				continueLesson({ highlightNew: true });
 			}
 		}
@@ -762,9 +844,12 @@ export default function App() {
 													{card?.title}
 												</CardTitle>
 											</CardHeader>
+											{/* Clicking a section is a shortcut into keyboard reading;
+											    the arrow keys drive the same thing without it. */}
 											<CardContent
 												data-explainable
 												className="reading prose prose-lg max-w-none dark:prose-invert"
+												onClick={(event) => selectSegment(item.id, event)}
 											>
 												<CardMarkdown body={card?.body ?? ""} />
 											</CardContent>
@@ -901,6 +986,7 @@ export default function App() {
 						aria-hidden
 						className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent"
 					/>
+					<ReadingHint trigger={hintNonce} />
 				</div>
 
 				{tab === "lesson" && (
@@ -955,6 +1041,34 @@ export default function App() {
 				)}
 			</main>
 		</Tabs>
+	);
+}
+
+// Entering reading mode is quiet — a click, or one arrow key — so say once,
+// briefly, what the keys now do. Re-triggering restarts the countdown.
+function ReadingHint({ trigger }: { trigger: number }) {
+	const [visible, setVisible] = useState(false);
+
+	useEffect(() => {
+		if (trigger === 0) return;
+		setVisible(true);
+		const timer = window.setTimeout(() => setVisible(false), 2600);
+		return () => window.clearTimeout(timer);
+	}, [trigger]);
+
+	if (!visible) return null;
+	return (
+		<div className="animate-in fade-in-0 slide-in-from-bottom-2 pointer-events-none absolute bottom-5 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2.5 rounded-full bg-popover py-2 pr-2.5 pl-4 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/8 duration-200">
+			Use arrow keys to step through
+			<span className="flex gap-1 text-muted-foreground">
+				<kbd className="grid size-6 place-items-center rounded-lg bg-foreground/8 text-xs">
+					↑
+				</kbd>
+				<kbd className="grid size-6 place-items-center rounded-lg bg-foreground/8 text-xs">
+					↓
+				</kbd>
+			</span>
+		</div>
 	);
 }
 
