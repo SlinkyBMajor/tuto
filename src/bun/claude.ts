@@ -6,6 +6,8 @@ import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
 import type {
 	Card,
 	Exercise,
+	Hierarchy,
+	HierarchyLevel,
 	OutlineItem,
 	Prerequisite,
 	ThreadMessage,
@@ -992,6 +994,7 @@ export function parseReply(text: string): {
 			conceptId:
 				typeof card.conceptId === "string" ? card.conceptId : undefined,
 			takeaway: parseTakeaway(card.takeaway),
+			hierarchy: parseHierarchy(card.hierarchy),
 			options: parseOptions(card.options),
 			// Honoured only on the card it belongs to. Taking the offer throws
 			// this lesson away and starts another, which is the right thing under
@@ -1014,6 +1017,33 @@ export function parseReply(text: string): {
 function parseTakeaway(raw: unknown): string | undefined {
 	if (typeof raw !== "string") return undefined;
 	return raw.trim() || undefined;
+}
+
+// The most rungs a picture of this kind can carry before it stops being one
+// glance. A deeper structure is two lessons, not one diagram.
+const MAX_HIERARCHY_LEVELS = 8;
+
+// A structure needs at least two rungs to be one. Depth is clamped rather than
+// trusted: it drives an indent, and a rung claiming depth 40 would walk the
+// panel off its own right edge.
+function parseHierarchy(raw: unknown): Hierarchy | undefined {
+	const value = raw as { levels?: unknown; current?: unknown } | null;
+	if (!value || !Array.isArray(value.levels)) return undefined;
+	const levels: HierarchyLevel[] = [];
+	for (const item of value.levels) {
+		const level = item as { name?: unknown; depth?: unknown; note?: unknown };
+		if (typeof level?.name !== "string" || !level.name.trim()) continue;
+		const depth =
+			typeof level.depth === "number" && Number.isFinite(level.depth)
+				? Math.min(Math.max(Math.round(level.depth), 0), 5)
+				: 0;
+		const note = typeof level.note === "string" ? level.note.trim() : "";
+		levels.push({ name: level.name.trim(), depth, note: note || undefined });
+		if (levels.length === MAX_HIERARCHY_LEVELS) break;
+	}
+	if (levels.length < 2) return undefined;
+	const current = typeof value.current === "string" ? value.current.trim() : "";
+	return { levels, current: current || undefined };
 }
 
 // Both fields or nothing: the button reads "Start with <topic>" and explains

@@ -23,6 +23,7 @@ import {
 	type TutorTurn,
 } from "./claude";
 import { modeOf, openingMessage, runtimeFor } from "./lesson-modes";
+import { installApplicationMenu } from "./menu";
 import { NotesDoc } from "./notes";
 import { makeLessonId } from "./paths";
 import { describeProject, pickProject } from "./project";
@@ -90,9 +91,24 @@ function startPrefetch(lesson: ActiveLesson) {
 // The notes are what the learner re-reads, and a takeaway per concept is what
 // makes that document scannable rather than something to read end to end.
 function notesEntry(card: TutorTurn["card"]): string {
-	const body = stripCardRefs(card.body);
-	if (!card.takeaway) return body;
-	return `${body}\n\n> **Key takeaway** — ${stripCardRefs(card.takeaway)}`;
+	const parts = [stripCardRefs(card.body)];
+	if (card.hierarchy) parts.push(hierarchyMarkdown(card.hierarchy));
+	if (card.takeaway) {
+		parts.push(`> **Key takeaway** — ${stripCardRefs(card.takeaway)}`);
+	}
+	return parts.join("\n\n");
+}
+
+// The tree as a nested list. The feed draws it with connectors; the notes are a
+// markdown document, where an indented list IS how a hierarchy is written.
+function hierarchyMarkdown(hierarchy: TutorTurn["card"]["hierarchy"]): string {
+	if (!hierarchy) return "";
+	const rows = hierarchy.levels.map((level) => {
+		const indent = "  ".repeat(level.depth);
+		const note = level.note ? ` — ${level.note}` : "";
+		return `${indent}- **${level.name}**${note}`;
+	});
+	return `**The hierarchy so far**\n\n${rows.join("\n")}`;
 }
 
 function finishTurn(lesson: ActiveLesson, turn: TutorTurn): TurnResult {
@@ -344,3 +360,8 @@ new BrowserWindow({
 	},
 	rpc,
 });
+
+// After the window, not before: the menu set before one exists is the one the
+// native layer then replaces with its default, and the app comes up with no
+// Edit menu — which on macOS means no ⌘C and no ⌘V anywhere in it.
+installApplicationMenu();

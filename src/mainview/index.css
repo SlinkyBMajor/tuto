@@ -716,6 +716,98 @@ ol[data-segment].segment-active {
 	transition: transform 180ms ease;
 }
 
+/* -------------------------------------------------------------- hierarchy */
+
+/* Where the concepts named so far sit inside one another. A neutral panel, not
+   an accented one: this is the lesson's furniture — a map you glance at — and
+   neither a keepsake (the takeaway's yellow) nor a position (the marker). Only
+   the rung the card just taught is picked out, and only quietly.
+
+   Inset to the card's own padding like the takeaway, so its left edge lands
+   under the card's text and its reading bar lands in the same gutter column as
+   every other section's. */
+.hierarchy {
+	position: relative;
+	margin: 0.55rem 1.5rem 0;
+	padding: 0.75rem 1.1rem 0.85rem;
+	border-radius: var(--radius-xl);
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+	transition: opacity 220ms ease;
+}
+
+.hierarchy__label {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-bottom: 0.5rem;
+	color: var(--muted-foreground);
+	font-size: 0.74rem;
+	font-weight: 600;
+}
+
+.hierarchy__tree {
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+	font-family: var(--font-reading);
+}
+
+/* One rung. The indent IS the containment, so it is driven by the depth the
+   tutor sent rather than by nesting the markup — a flat list is far easier to
+   render correctly than a tree of lists, and reads identically. */
+.hierarchy__level {
+	position: relative;
+	padding: 0.2rem 0 0.2rem calc(var(--depth) * 1.15rem + 0.15rem);
+	font-size: calc(0.88rem * var(--reading-scale));
+	line-height: 1.45;
+}
+
+/* The elbow into the rung above: a corner drawn out of two borders, sitting in
+   the indent this rung's depth bought. It is what turns an indented list into
+   something that reads as a tree. */
+.hierarchy__level--nested::before {
+	content: "";
+	position: absolute;
+	left: calc((var(--depth) - 1) * 1.15rem + 0.45rem);
+	top: 0;
+	width: 0.6rem;
+	height: 0.85em;
+	border-left: 1px solid var(--border);
+	border-bottom: 1px solid var(--border);
+	border-bottom-left-radius: 0.3rem;
+}
+
+.hierarchy__name {
+	font-weight: 600;
+	color: var(--foreground);
+}
+
+.hierarchy__note {
+	color: var(--muted-foreground);
+}
+
+.hierarchy__note::before {
+	content: " — ";
+}
+
+/* Where the learner has got to. A dot in the gutter and a firmer name — enough
+   to find at a glance, quiet enough not to compete with the card above. */
+.hierarchy__level.is-current .hierarchy__name {
+	color: var(--marker);
+}
+
+.hierarchy__level.is-current::after {
+	content: "";
+	position: absolute;
+	left: -0.6rem;
+	top: 0.62em;
+	width: 0.3rem;
+	height: 0.3rem;
+	border-radius: 999px;
+	background: var(--marker);
+}
+
 /* ----------------------------------------------------------- sticky notes */
 
 .sticky-note {

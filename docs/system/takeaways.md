@@ -22,7 +22,9 @@ Nothing enforces the frequency in code, and nothing can: each turn is independen
 
 ## How it renders
 
-`TakeawayNote` draws a panel under the card: a marker-tinted surface with a marker ring, the label "Key takeaway" with a bulb icon, and the sentence at body size in a heavier weight. Markdown is rendered with a bare `<Markdown>` and `stripCardRefs`, not `CardMarkdown` — it is one sentence that may carry a name in backticks, and it has no fences, diagrams, or links to resolve.
+`TakeawayNote` draws a panel under the card: a yellow surface with a yellow edge, the label "Key takeaway" with a bulb icon, and the sentence at body size in a heavier weight.
+
+**Yellow, and the only yellow in the app.** It is deliberately not the marker: the marker means *here is where you are* — the reading position, the blank to fill, the term you selected — and a takeaway is not a position, it is a keepsake. The four `--highlight-*` tokens are picked per theme rather than mixed from one value, because a yellow saturated enough to fill a panel with is far too light to read as text, and on a dark card the roles swap entirely. Markdown is rendered with a bare `<Markdown>` and `stripCardRefs`, not `CardMarkdown` — it is one sentence that may carry a name in backticks, and it has no fences, diagrams, or links to resolve.
 
 **A feed item is now a wrapper, not a card.** `data-item-id` moved from the `<UICard>` onto a `<div>` holding the card and its takeaway, because every section coordinate in the app is (item id, section index) — the reading position, the dimming rules in `index.css`, a sticky note's anchor. The click that puts the reading position on a section moved to that wrapper for the same reason. Hover tracking for the add-a-note button stayed on the card itself, so the button never appears beside the takeaway.
 

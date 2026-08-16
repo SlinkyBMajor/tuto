@@ -219,6 +219,15 @@ export const DEMO_CARDS: Card[] = [
 		conceptId: "message-flow",
 		title: "How messages flow",
 		body: "Producers write to a topic; consumers read from it independently.\n\n```mermaid\nflowchart LR\n  P1[Order service] --> T[(orders topic)]\n  P2[Checkout service] --> T\n  T --> C1[Billing consumer]\n  T --> C2[Analytics consumer]\n```\n\nBoth consumers see every message — reading does not remove anything. The `groupId` in [[card:Consuming messages]] is what keeps their positions apart.",
+		hierarchy: {
+			levels: [
+				{ name: "Cluster", depth: 0, note: "the brokers, running together" },
+				{ name: "Topic", depth: 1, note: "one named stream of messages" },
+				{ name: "Partition", depth: 2, note: "one ordered log inside a topic" },
+				{ name: "Message", depth: 3, note: "one record, at one offset" },
+			],
+			current: "Topic",
+		},
 		// Two takeaways in a row is rarer than this in a real lesson; the fixture
 		// carries both so the panel can be checked after a code block and after a
 		// diagram, and the card below shows what a card without one looks like.

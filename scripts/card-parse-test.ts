@@ -182,6 +182,42 @@ function testPrerequisite() {
 	);
 }
 
+// The hierarchy drives an indent and a tree of elbows, so a rung with a silly
+// depth or a structure with only one rung has to be turned away rather than
+// drawn.
+function testHierarchy() {
+	const good = `{"card":{"type":"step","title":"Stacks","body":"b","hierarchy":{"levels":[{"name":"Project","depth":0,"note":"a folder"},{"name":"Stack","depth":1},{"name":"Resource","depth":2}],"current":"Stack"}}}`;
+	const parsed = parseReply(good).card.hierarchy;
+	check("hierarchy parses", parsed?.levels.length === 3);
+	check("hierarchy keeps depth", parsed?.levels[2]?.depth === 2);
+	check("hierarchy keeps current", parsed?.current === "Stack");
+	check("a rung without a note is fine", parsed?.levels[1]?.note === undefined);
+
+	const oneRung = `{"card":{"type":"step","title":"T","body":"b","hierarchy":{"levels":[{"name":"Project","depth":0}]}}}`;
+	check(
+		"a hierarchy of one rung is not one",
+		parseReply(oneRung).card.hierarchy === undefined,
+	);
+
+	const runaway = `{"card":{"type":"step","title":"T","body":"b","hierarchy":{"levels":[{"name":"A","depth":0},{"name":"B","depth":40}]}}}`;
+	check(
+		"a runaway depth is clamped",
+		parseReply(runaway).card.hierarchy?.levels[1]?.depth === 5,
+	);
+
+	const junk = `{"card":{"type":"step","title":"T","body":"b","hierarchy":{"levels":[{"name":"A","depth":0},{"depth":1},{"name":"  ","depth":1},{"name":"B","depth":1}]}}}`;
+	check(
+		"nameless rungs are dropped",
+		parseReply(junk).card.hierarchy?.levels.length === 2,
+	);
+
+	const notAList = `{"card":{"type":"step","title":"T","body":"b","hierarchy":{"levels":"Project > Stack"}}}`;
+	check(
+		"a hierarchy that is not a list is dropped",
+		parseReply(notAList).card.hierarchy === undefined,
+	);
+}
+
 // A reply with no card at all yields no salvage.
 function testProseOnly() {
 	check(
@@ -199,6 +235,7 @@ testInnerQuote();
 testTruncated();
 testTakeaway();
 testPrerequisite();
+testHierarchy();
 testProseOnly();
 
 if (failures > 0) {

@@ -28,6 +28,7 @@ import textLogo from "@/assets/text-logo.png";
 import { AppRail } from "@/components/app-rail";
 import { CardMarkdown } from "@/components/card-markdown";
 import { ExplainSelection } from "@/components/explain";
+import { HierarchyNote } from "@/components/hierarchy";
 import { LessonLibrary } from "@/components/home";
 import {
 	LessonPlanning,
@@ -1783,6 +1784,12 @@ export default function App() {
 													</CardContent>
 												)}
 											</UICard>
+											{/* The structure first, then the line to keep: the map
+											    tells you where you are, the takeaway is what you
+											    leave with. */}
+											{card?.hierarchy && (
+												<HierarchyNote hierarchy={card.hierarchy} />
+											)}
 											{card?.takeaway && <TakeawayNote text={card.takeaway} />}
 											{/* The two things you can hang off a section — the same
 											    pair ArrowRight and ArrowLeft do by keyboard. Out here

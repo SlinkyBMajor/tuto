@@ -58,6 +58,27 @@ export interface CardOption {
 	description?: string;
 }
 
+// One rung of a structure the lesson is teaching: a named thing, how far inside
+// the structure it sits, and a line on what it is.
+export interface HierarchyLevel {
+	name: string;
+	// 0 is the outermost thing, and each step in is one deeper. Rungs at the
+	// same depth are siblings, which is what lets this describe a tree and not
+	// only a chain.
+	depth: number;
+	note?: string;
+}
+
+// "The hierarchy so far" — where everything the lesson has named sits inside
+// everything else. Sent whole each time it grows, never as a diff, for the same
+// reason the outline is: the app holds no memory of the last one.
+export interface Hierarchy {
+	levels: HierarchyLevel[];
+	// The rung this card just taught, by name, so the picture can say where the
+	// learner has got to
+	current?: string;
+}
+
 // An offer, made on the level question, to teach the ground this subject rests
 // on before teaching the subject itself. The app composes the button and the
 // promise to come back, so the tutor writes two facts rather than UI copy.
@@ -85,6 +106,9 @@ export interface Card {
 	// panel under it and filed into the notes. Most cards have none — see the
 	// bar in prompts/tutor.md, and docs/system/takeaways.md.
 	takeaway?: string;
+	// Where the concepts named so far sit inside one another, redrawn on the
+	// card that adds a rung — see docs/system/hierarchy.md.
+	hierarchy?: Hierarchy;
 	options?: CardOption[];
 	// Question cards only: an offer to start one step further back. Taking it
 	// replaces this lesson with one on the ground it rests on — see

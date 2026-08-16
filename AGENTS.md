@@ -20,7 +20,7 @@ A lesson comes in one of two **modes**: a *topic* lesson is taught from what the
 
 | Path | What's there |
 |------|-------------|
-| `src/bun/` | Bun main process: window + RPC (`index.ts`), the `claude -p` wrappers (`claude.ts`), lesson modes (`lesson-modes.ts`), project picking (`project.ts`), the project map a codebase lesson opens with (`repo-map.ts`), lesson store (`store.ts`), notes document (`notes.ts`), data paths (`paths.ts`). |
+| `src/bun/` | Bun main process: window + RPC (`index.ts`), the application menu (`menu.ts` — it is what makes ⌘C work; see `docs/system/desktop-shell.md`), the `claude -p` wrappers (`claude.ts`), lesson modes (`lesson-modes.ts`), project picking (`project.ts`), the project map a codebase lesson opens with (`repo-map.ts`), lesson store (`store.ts`), notes document (`notes.ts`), data paths (`paths.ts`). |
 | `src/mainview/` | React WebView UI. `App.tsx` holds the app; `components/` has the cards, tabs, practice, notes, explain, project picker, settings, and the margin beside the feed (`margin-layer.tsx`, with `sticky-notes.tsx` and `question-threads.tsx` in it); `lib/` has the RPC bridge and demo fixtures. |
 | `src/shared/` | `types.ts` — the typed RPC schema shared between the Bun process and the WebView, and `LessonConfig`. |
 | `prompts/` | System prompts, imported into the Bun process as text: the core `tutor.md`, one section per lesson mode in `modes/`, and the side-calls (`discuss.md`, `exercise-check.md`, `exercise-regen.md`, `explain.md`, `mermaid-fix.md`). |
