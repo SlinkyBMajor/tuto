@@ -113,6 +113,75 @@ function testTruncated() {
 	);
 }
 
+// The takeaway is a plain string on the card, so it must survive the tolerant
+// parse and the salvage the same way the title and body do — and a card without
+// one (the normal case) must not grow an empty panel.
+function testTakeaway() {
+	const withTakeaway = `{"card":{"type":"step","title":"Protobuf schemas","body":"para one.
+para two.","takeaway":"A \`.proto\` file describes the shape of the data, not how it travels."}}`;
+	const { card } = parseReply(withTakeaway);
+	check(
+		"takeaway survives the tolerant parse",
+		card.takeaway?.startsWith("A `.proto` file describes") ?? false,
+		card.takeaway,
+	);
+
+	const noTakeaway = `{"card":{"type":"step","title":"T","body":"b"}}`;
+	check(
+		"a card without a takeaway has none",
+		parseReply(noTakeaway).card.takeaway === undefined,
+	);
+
+	const blank = `{"card":{"type":"step","title":"T","body":"b","takeaway":"   "}}`;
+	check(
+		"a whitespace-only takeaway is dropped",
+		parseReply(blank).card.takeaway === undefined,
+	);
+
+	const wrongType = `{"card":{"type":"step","title":"T","body":"b","takeaway":["a","b"]}}`;
+	check(
+		"a non-string takeaway is dropped",
+		parseReply(wrongType).card.takeaway === undefined,
+	);
+
+	const truncated = `{"card":{"type":"step","title":"Cut off","body":"body text","takeaway":"The broker keeps the message`;
+	const salvaged = salvageCard(truncated);
+	check(
+		"salvage recovers a partial takeaway",
+		salvaged?.takeaway === "The broker keeps the message",
+		salvaged?.takeaway,
+	);
+}
+
+// The prerequisite offer replaces the lesson, so it is honoured only on the
+// question card it belongs to, and only when it carries both of its fields.
+function testPrerequisite() {
+	const onQuestion = `{"card":{"type":"question","title":"Where are you starting from?","body":"So I can pitch this right:","options":[{"id":"beginner","label":"New to it"}],"prerequisite":{"topic":"Infrastructure as code","reason":"Pulumi is one way of writing it."}}}`;
+	check(
+		"a question card keeps its prerequisite",
+		parseReply(onQuestion).card.prerequisite?.topic ===
+			"Infrastructure as code",
+	);
+
+	const onStep = `{"card":{"type":"step","title":"T","body":"b","prerequisite":{"topic":"X","reason":"Y"}}}`;
+	check(
+		"a step card drops a prerequisite",
+		parseReply(onStep).card.prerequisite === undefined,
+	);
+
+	const halfOffer = `{"card":{"type":"question","title":"T","body":"b","prerequisite":{"topic":"X"}}}`;
+	check(
+		"a prerequisite missing its reason is dropped",
+		parseReply(halfOffer).card.prerequisite === undefined,
+	);
+
+	const blankOffer = `{"card":{"type":"question","title":"T","body":"b","prerequisite":{"topic":"  ","reason":"Y"}}}`;
+	check(
+		"a prerequisite with a blank topic is dropped",
+		parseReply(blankOffer).card.prerequisite === undefined,
+	);
+}
+
 // A reply with no card at all yields no salvage.
 function testProseOnly() {
 	check(
@@ -128,6 +197,8 @@ testRawTab();
 testFenced();
 testInnerQuote();
 testTruncated();
+testTakeaway();
+testPrerequisite();
 testProseOnly();
 
 if (failures > 0) {

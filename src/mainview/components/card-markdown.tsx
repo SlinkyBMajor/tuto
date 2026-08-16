@@ -13,6 +13,7 @@ import Markdown from "react-markdown";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getHighlighter } from "@/lib/highlighter";
 import { bun } from "@/lib/rpc";
+import { CARD_REF_HREF, linkCardRefs } from "../../shared/card-refs";
 
 export function headingId(text: string): string {
 	return text
@@ -81,25 +82,69 @@ const STATIC_COMPONENTS = {
 	),
 };
 
+// A reference to another card arrives here as a link under CARD_REF_HREF, put
+// there by linkCardRefs so react-markdown does the parsing. Any other href is a
+// real link and renders as one.
+function cardRefAnchor(
+	onNavigate?: (slug: string) => void,
+	resolve?: (slug: string) => boolean,
+) {
+	return ({ href, children }: { href?: string; children?: ReactNode }) => {
+		if (!href?.startsWith(CARD_REF_HREF)) {
+			return <a href={href}>{children}</a>;
+		}
+		const slug = href.slice(CARD_REF_HREF.length);
+		// A title the tutor paraphrased or mistyped resolves to no card at all,
+		// and the notes and practice panels have no feed to resolve against.
+		// Both fall back to the words themselves — never a link going nowhere.
+		if (!resolve?.(slug)) return <>{children}</>;
+		return (
+			<button
+				type="button"
+				className="card-ref"
+				onClick={(event) => {
+					// The card body's own click handler starts keyboard reading at
+					// the clicked segment; following a reference is not that.
+					event.stopPropagation();
+					onNavigate?.(slug);
+				}}
+			>
+				{children}
+			</button>
+		);
+	};
+}
+
 export function CardMarkdown({
 	body,
 	markBlank = false,
+	onCardRef,
+	resolveCardRef,
 }: {
 	body: string;
 	// Practice snippets carry exactly one ____ blank; mark it as a slot
 	markBlank?: boolean;
+	// The feed passes both: one jumps to a referenced card, the other reports
+	// whether that card exists to jump to. Panels that pass neither render
+	// references as plain text. Both must be identity-stable for the same
+	// reason STATIC_COMPONENTS is — a new function remounts the whole tree.
+	onCardRef?: (slug: string) => void;
+	resolveCardRef?: (slug: string) => boolean;
 }) {
 	const components = useMemo(
 		() => ({
 			...STATIC_COMPONENTS,
+			a: cardRefAnchor(onCardRef, resolveCardRef),
 			pre: (props: { children?: ReactNode }) => (
 				<PreBlock {...props} markBlank={markBlank} />
 			),
 		}),
-		[markBlank],
+		[markBlank, onCardRef, resolveCardRef],
 	);
 
-	return <Markdown components={components}>{body}</Markdown>;
+	const source = useMemo(() => linkCardRefs(body), [body]);
+
+	return <Markdown components={components}>{source}</Markdown>;
 }
 
 function PreBlock(props: { children?: ReactNode; markBlank?: boolean }) {
@@ -211,13 +256,17 @@ function ShikiBlock({
 				<span className="code-block__lang">{label}</span>
 				<CopyButton source={source} />
 			</figcaption>
+			{/* data-section-text: the bar above carries a language label and a Copy
+			    button, and a question asked about this section should be about the
+			    code, not about the word "Copy" (see sectionTextOf). */}
 			{html ? (
 				<div
+					data-section-text
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: shiki escapes the source it highlights
 					dangerouslySetInnerHTML={{ __html: html }}
 				/>
 			) : (
-				<pre>
+				<pre data-section-text>
 					<code>{source}</code>
 				</pre>
 			)}

@@ -2,6 +2,7 @@ import {
 	BookOpen01Icon,
 	CheckmarkCircle02Icon,
 	Delete02Icon,
+	FolderCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -94,7 +95,13 @@ export function LessonLibrary({
 						)}
 					>
 						<HugeiconsIcon
-							icon={lesson.ended ? CheckmarkCircle02Icon : BookOpen01Icon}
+							icon={
+								lesson.ended
+									? CheckmarkCircle02Icon
+									: lesson.project
+										? FolderCodeIcon
+										: BookOpen01Icon
+							}
 							className="size-5"
 						/>
 					</span>
@@ -102,7 +109,8 @@ export function LessonLibrary({
 						<span className="truncate text-[0.95rem] font-semibold">
 							{lesson.topic}
 						</span>
-						<span className="text-xs text-muted-foreground tabular-nums">
+						<span className="truncate text-xs text-muted-foreground tabular-nums">
+							{lesson.project && `${lesson.project} · `}
 							{progressLabel(lesson)} · {relativeTime(lesson.updatedAt)}
 						</span>
 						<span className="h-1 w-full overflow-hidden rounded-full bg-border">

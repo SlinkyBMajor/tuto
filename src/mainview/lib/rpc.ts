@@ -6,7 +6,11 @@ type BunRequests = BridgeRpc["request"];
 type BunMessages = BridgeRpc["send"];
 
 // The current subscriber for streaming card previews (the mounted App).
-type StreamHandler = (preview: { title: string; body: string }) => void;
+type StreamHandler = (preview: {
+	title: string;
+	body: string;
+	activity?: string;
+}) => void;
 let streamHandler: StreamHandler | null = null;
 export function onStreamCard(handler: StreamHandler | null) {
 	streamHandler = handler;
@@ -18,7 +22,9 @@ export function onStreamCard(handler: StreamHandler | null) {
 function createBridge(): BridgeRpc | undefined {
 	try {
 		const rpc = Electroview.defineRPC<TutoRPC>({
-			maxRequestTime: 300_000,
+			// Matches the bun side: a codebase turn can read for minutes before
+			// it writes a card
+			maxRequestTime: 900_000,
 			handlers: {
 				requests: {},
 				messages: {

@@ -4,6 +4,7 @@
 
 import { readdir, rm } from "node:fs/promises";
 import type {
+	LessonConfig,
 	LessonRecord,
 	LessonSnapshot,
 	LessonSummary,
@@ -14,18 +15,34 @@ function recordPath(id: string): string {
 	return `${lessonDir(id)}/lesson.json`;
 }
 
+// How a saved lesson was started. Records written before lesson modes existed
+// have no config; they were all topic lessons, and their code language sat at
+// the top level.
+export function configOf(record: LessonRecord): LessonConfig {
+	return (
+		record.config ?? {
+			mode: "topic",
+			topic: record.topic,
+			language: record.language,
+		}
+	);
+}
+
 // Save a snapshot, merging bun-owned metadata. createdAt is preserved from the
 // existing record so it reflects when the lesson was first started.
 export async function saveLesson(
 	snapshot: LessonSnapshot,
-	meta: { sessionId?: string; language?: string },
+	meta: { sessionId?: string; config?: LessonConfig },
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const existing = await loadLesson(snapshot.id);
 	const record: LessonRecord = {
 		...snapshot,
-		sessionId: meta.sessionId,
-		language: meta.language,
+		// Fall back to what is already on disk: a save for a lesson that is no
+		// longer the open one arrives with no metadata, and dropping the session
+		// id would leave that lesson unable to resume its conversation.
+		sessionId: meta.sessionId ?? existing?.sessionId,
+		config: meta.config ?? existing?.config,
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,
 	};
@@ -53,18 +70,25 @@ export async function listLessons(): Promise<LessonSummary[]> {
 	const records = await Promise.all(ids.map((id) => loadLesson(id)));
 	return records
 		.filter((record): record is LessonRecord => record !== null)
-		.map((record) => ({
-			id: record.id,
-			topic: record.topic,
-			updatedAt: record.updatedAt,
-			conceptCount: record.outline?.length ?? 0,
-			currentIndex: record.outline
-				? record.outline.findIndex(
-						(item) => item.id === record.currentConceptId,
-					)
-				: -1,
-			ended: record.feed.at(-1)?.card?.type === "recap",
-		}))
+		.map((record) => {
+			const config = configOf(record);
+			return {
+				id: record.id,
+				topic: record.topic,
+				updatedAt: record.updatedAt,
+				conceptCount: record.outline?.length ?? 0,
+				currentIndex: record.outline
+					? record.outline.findIndex(
+							(item) => item.id === record.currentConceptId,
+						)
+					: -1,
+				// Reaching the recap ends a lesson; a follow-up answered after it
+				// lands as an ordinary card and does not reopen it.
+				ended: record.feed.some((item) => item.card?.type === "recap"),
+				mode: config.mode,
+				project: config.mode === "codebase" ? config.project.name : undefined,
+			};
+		})
 		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 

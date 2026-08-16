@@ -3,7 +3,26 @@ import type {
 	Exercise,
 	LessonSummary,
 	OutlineItem,
+	ProjectRef,
+	SavedThread,
 } from "../../shared/types";
+
+// Stands in for a folder the learner picked, so the codebase-lesson chrome can
+// be rendered outside the app shell (?demoproject)
+export const DEMO_PROJECT: ProjectRef = {
+	path: "/Users/you/Documents/GitHub/everest",
+	name: "everest",
+};
+
+// Lookups of the kind a codebase lesson streams while it plans, for rendering
+// the planning screen without a model call (?demoplanning&demoproject)
+export const DEMO_ACTIVITY = [
+	"Reading services/auth-service/docs/system/oauth.md",
+	"Reading services/auth-service/docs/system/security.md",
+	"Reading docs/adr/0007-bff-token-handler-pattern.md",
+	"Searching for scopedRoles|resolveActiveGrants",
+	"Reading services/auth-service/src/tokens/token.service.ts",
+];
 
 export const DEMO_LESSONS: LessonSummary[] = [
 	{
@@ -13,6 +32,17 @@ export const DEMO_LESSONS: LessonSummary[] = [
 		conceptCount: 5,
 		currentIndex: 2,
 		ended: false,
+		mode: "topic",
+	},
+	{
+		id: "demo-auth",
+		topic: "How identity and org-scoped tokens work",
+		updatedAt: new Date(Date.now() - 4 * 3600000).toISOString(),
+		conceptCount: 6,
+		currentIndex: 1,
+		ended: false,
+		mode: "codebase",
+		project: "everest",
 	},
 	{
 		id: "demo-k8s",
@@ -21,6 +51,7 @@ export const DEMO_LESSONS: LessonSummary[] = [
 		conceptCount: 8,
 		currentIndex: 7,
 		ended: true,
+		mode: "topic",
 	},
 	{
 		id: "demo-rust",
@@ -29,6 +60,7 @@ export const DEMO_LESSONS: LessonSummary[] = [
 		conceptCount: 0,
 		currentIndex: -1,
 		ended: false,
+		mode: "topic",
 	},
 ];
 
@@ -83,6 +115,8 @@ const consumer = kafka.consumer({ groupId: "my-app" });
 await consumer.subscribe({ topic: "orders" });
 \`\`\`
 
+> **Key takeaway** — Kafka tracks a reading position per \`groupId\`, not per consumer.
+
 ### Consumer groups
 
 Two apps that both need every message use different group ids — each group tracks its own reading position.
@@ -103,11 +137,57 @@ flowchart LR
 Topics are append-only logs; producers write, consumers read independently at their own pace.
 `;
 
+// Conversations hanging off sections of the fixture cards, so the margin can be
+// seen full without an RPC bridge: one thread that ran to several questions,
+// and one that was a single exchange.
+export const DEMO_THREADS: SavedThread[] = [
+	{
+		id: "demo-thread-groups",
+		cardIndex: 1,
+		segmentIndex: 2,
+		messages: [
+			{
+				role: "user",
+				text: "Why does the position belong to the group and not to the consumer?",
+			},
+			{
+				role: "tutor",
+				text: "So a group can gain or lose consumers without losing its place. If the position lived on the consumer, restarting one would restart its reading.\n\nKafka keeps it per `groupId` and per partition, in an internal topic called `__consumer_offsets`.",
+			},
+			{
+				role: "user",
+				text: "What happens if two different groups read the same topic?",
+			},
+			{
+				role: "tutor",
+				text: "Each keeps its own position, so both see every message. That is how one topic feeds billing and analytics at the same time.",
+			},
+		],
+	},
+	{
+		id: "demo-thread-producer",
+		cardIndex: 2,
+		segmentIndex: 0,
+		messages: [
+			{ role: "user", text: "Is a producer always a separate service?" },
+			{
+				role: "tutor",
+				text: "No. A producer is any code holding a Kafka client that calls `send`. It is usually part of a service that does other work too.",
+			},
+		],
+	},
+];
+
 export const DEMO_CARDS: Card[] = [
 	{
 		type: "question",
 		title: "Where are you starting from?",
 		body: "So I can pitch this right:",
+		prerequisite: {
+			topic: "Publish and subscribe",
+			reason:
+				"Kafka is a publish–subscribe log, so that pattern is the shape everything in it follows.",
+		},
 		options: [
 			{
 				id: "beginner",
@@ -131,18 +211,24 @@ export const DEMO_CARDS: Card[] = [
 		conceptId: "consuming",
 		title: "Consuming messages",
 		body: 'A consumer subscribes to a topic and reads messages in order.\n\n```js\nimport { Kafka } from "kafkajs";\n\nconst kafka = new Kafka({ brokers: ["localhost:9092"] });\nconst consumer = kafka.consumer({ groupId: "my-app" });\n\nawait consumer.subscribe({ topic: "orders" });\nawait consumer.run({\n  eachMessage: async ({ message }) => {\n    console.log(message.value.toString());\n  },\n});\n```\n\nThe `groupId` tells Kafka which reading position to track for your app.',
+		takeaway:
+			"Kafka tracks a reading position per `groupId`, not per consumer.",
 	},
 	{
 		type: "step",
 		conceptId: "message-flow",
 		title: "How messages flow",
-		body: "Producers write to a topic; consumers read from it independently.\n\n```mermaid\nflowchart LR\n  P1[Order service] --> T[(orders topic)]\n  P2[Checkout service] --> T\n  T --> C1[Billing consumer]\n  T --> C2[Analytics consumer]\n```\n\nBoth consumers see every message — reading does not remove anything.",
+		body: "Producers write to a topic; consumers read from it independently.\n\n```mermaid\nflowchart LR\n  P1[Order service] --> T[(orders topic)]\n  P2[Checkout service] --> T\n  T --> C1[Billing consumer]\n  T --> C2[Analytics consumer]\n```\n\nBoth consumers see every message — reading does not remove anything. The `groupId` in [[card:Consuming messages]] is what keeps their positions apart.",
+		// Two takeaways in a row is rarer than this in a real lesson; the fixture
+		// carries both so the panel can be checked after a code block and after a
+		// diagram, and the card below shows what a card without one looks like.
+		takeaway: "Reading a message does not remove it from the topic.",
 	},
 	{
 		type: "step",
 		conceptId: "message-flow",
 		title: "A broken diagram (tests the fix path)",
-		body: "The diagram below has a syntax error on purpose.\n\n```mermaid\nflowchart LR\n  A[Producer --> B[(topic)]\n  B --> C[Consumer\n```\n\nIn the app it should be silently repaired; in a plain browser it is hidden.",
+		body: "The diagram below has a syntax error on purpose.\n\n```mermaid\nflowchart LR\n  A[Producer --> B[(topic)]\n  B --> C[Consumer\n```\n\nIn the app it should be silently repaired; in a plain browser it is hidden. A reference to [[card:No card by this name]] names no card in the feed, and must read as plain words rather than a dead link.",
 	},
 	{
 		type: "recap",

@@ -1,8 +1,38 @@
+import discussPrompt from "../../prompts/discuss.md";
 import exerciseCheckPrompt from "../../prompts/exercise-check.md";
+import exerciseRegenPrompt from "../../prompts/exercise-regen.md";
 import explainPrompt from "../../prompts/explain.md";
 import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
-import tutorPrompt from "../../prompts/tutor.md";
-import type { Card, Exercise, OutlineItem } from "../shared/types";
+import type {
+	Card,
+	Exercise,
+	OutlineItem,
+	Prerequisite,
+	ThreadMessage,
+} from "../shared/types";
+
+// How a lesson's turns are executed. Built once per lesson from its mode (see
+// lesson-modes.ts) and passed to every turn of that lesson, so this file knows
+// how to run the CLI without knowing what kinds of lesson exist.
+export interface TutorRuntime {
+	// The full system prompt: core tutor instructions plus the mode's section
+	systemPrompt: string;
+	// Built-in CLI tools the tutor may use; empty disables all of them
+	tools: readonly string[];
+	// Working directory for the CLI — the project root when the lesson teaches
+	// from one, so relative paths in the tutor's citations mean something
+	cwd?: string;
+	// Wall clock budget for one turn. A turn that reads its way around a
+	// codebase needs far longer than one answered from the model's own
+	// knowledge, so this is per-mode rather than a global constant.
+	timeoutMs: number;
+	// Pinned per mode, so a lesson costs what the mode says it costs instead of
+	// following whatever model this machine happens to default to
+	model?: string;
+	// Hard ceiling for one turn — a backstop against a turn that reads forever,
+	// not a budget the tutor is meant to work within
+	maxBudgetUsd?: number;
+}
 
 const TURN_TIMEOUT_MS = 180_000;
 // Re-asks of a session that replied with something we couldn't parse
@@ -10,8 +40,51 @@ const MAX_CARD_REPAIRS = 2;
 // Re-runs of a call the CLI itself failed
 const MAX_TRANSPORT_RETRIES = 2;
 const RETRY_BACKOFF_MS = 1_000;
-// Haiku is the fast, cheap tier — ideal for a quick term lookup
-const EXPLAIN_MODEL = "claude-haiku-4-5-20251001";
+// Haiku is the fast, cheap tier, and every stateless side-call belongs on it:
+// looking a term up, grading an answer against one that's already known, fixing
+// diagram syntax. Each is a small bounded job with a short reply and no reading
+// to do — the teaching judgement lives in the lesson turn, which is where the
+// bigger model earns its keep. These are also the calls the learner waits on
+// with the UI blocked, so latency matters more here than anywhere else.
+const SIDE_CALL_MODEL = "claude-haiku-4-5-20251001";
+// The one side-call that writes teaching material instead of judging something
+// it was handed the answer to, so it gets the tier a lesson turn would use.
+// Thinking stays off with the others: the rules are explicit and the lesson
+// material is in the prompt, so reasoning tokens buy little and the learner
+// waits through every one of them with the exercise card blocked.
+const EXERCISE_MODEL = "claude-sonnet-5";
+// Re-asks of a regeneration that came back with a blank we can't use
+const MAX_EXERCISE_ATTEMPTS = 2;
+// A one-shot with no tools answers in seconds. This is a backstop against a
+// hung call, not a budget: it fails visibly instead of blocking a learner mid-
+// exercise for the three minutes a lesson turn is allowed.
+const SIDE_CALL_TIMEOUT_MS = 60_000;
+// Thinking off is the single biggest win here, and a much larger one than the
+// model tier. These jobs are judgement-light — the expected answer is handed
+// in, the parser error names the fault — so the reasoning tokens buy nothing
+// and are pure latency: measured on a grading call, Haiku spent ~875 output
+// tokens and 12.7s with thinking on versus ~76 tokens and 4.4s with it off,
+// same verdict. Scoped to side-calls; a lesson turn still thinks.
+const SIDE_CALL_ENV = { MAX_THINKING_TOKENS: "0" };
+
+// Every call this app makes runs hermetically, lesson turns and side-calls
+// alike: none of the machine's customizations — CLAUDE.md, skills, plugins,
+// hooks, MCP servers, custom agents, output styles — reach it. The app gives a
+// call its context on purpose (the mode's prompt, and for a codebase lesson the
+// map from repo-map.ts); inheriting whatever the developer happens to have
+// configured would put tens of thousands of tokens into every turn and slow
+// each one down with their hooks. It is a correctness matter too: what a lesson
+// teaches shouldn't depend on whose machine it runs on.
+//
+// --strict-mcp-config is kept alongside --safe-mode rather than left to it:
+// --tools filters the built-in set only, so MCP servers would otherwise still
+// be handed to a call, and the tool set is a security boundary that shouldn't
+// depend on another flag's scope.
+//
+// Deliberately not --bare, which looks like a stronger version of the same idea
+// but takes auth strictly from ANTHROPIC_API_KEY or an apiKeyHelper, never the
+// keychain or OAuth. This app runs on the CLI's own logged-in session.
+const HERMETIC_ARGS = ["--safe-mode", "--strict-mcp-config"] as const;
 
 function claudeBinary(): string {
 	const found = Bun.which("claude");
@@ -44,13 +117,52 @@ class ClaudeTransportError extends Error {
 	}
 }
 
+// What one CLI call actually cost, read off the result envelope. A codebase
+// turn can spend minutes and real money reading, so this is worth carrying:
+// the smoke scripts report it, and it is the only honest way to tell whether
+// a change to the mode made things cheaper.
+export interface TurnCost {
+	usd: number;
+	ms: number;
+	// Agentic iterations inside the turn — how much reading it did
+	steps: number;
+}
+
 interface ClaudeResult {
 	result: string;
 	sessionId: string;
+	cost?: TurnCost;
 }
 
-async function spawnClaude(args: string[]): Promise<ClaudeResult> {
+// The envelope carries these on both the json and stream-json paths
+function readCost(envelope: {
+	total_cost_usd?: unknown;
+	duration_ms?: unknown;
+	num_turns?: unknown;
+}): TurnCost | undefined {
+	if (typeof envelope.total_cost_usd !== "number") return undefined;
+	return {
+		usd: envelope.total_cost_usd,
+		ms: typeof envelope.duration_ms === "number" ? envelope.duration_ms : 0,
+		steps: typeof envelope.num_turns === "number" ? envelope.num_turns : 0,
+	};
+}
+
+interface SpawnOptions {
+	cwd?: string;
+	timeoutMs?: number;
+	// Extra environment for the CLI process, merged over the app's own
+	env?: Record<string, string>;
+}
+
+async function spawnClaude(
+	args: string[],
+	options: SpawnOptions = {},
+): Promise<ClaudeResult> {
+	const timeoutMs = options.timeoutMs ?? TURN_TIMEOUT_MS;
 	const proc = Bun.spawn([claudeBinary(), ...args], {
+		cwd: options.cwd,
+		env: options.env ? { ...process.env, ...options.env } : undefined,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -58,7 +170,7 @@ async function spawnClaude(args: string[]): Promise<ClaudeResult> {
 	const timeout = setTimeout(() => {
 		timedOut = true;
 		proc.kill();
-	}, TURN_TIMEOUT_MS);
+	}, timeoutMs);
 
 	try {
 		const [stdout, stderr] = await Promise.all([
@@ -68,7 +180,7 @@ async function spawnClaude(args: string[]): Promise<ClaudeResult> {
 		const exitCode = await proc.exited;
 		if (timedOut) {
 			throw new ClaudeTransportError(
-				`claude timed out after ${TURN_TIMEOUT_MS / 1000}s`,
+				`claude timed out after ${timeoutMs / 1000}s`,
 				false,
 			);
 		}
@@ -78,7 +190,14 @@ async function spawnClaude(args: string[]): Promise<ClaudeResult> {
 				true,
 			);
 		}
-		let envelope: { result: string; session_id: string; is_error?: boolean };
+		let envelope: {
+			result: string;
+			session_id: string;
+			is_error?: boolean;
+			total_cost_usd?: number;
+			duration_ms?: number;
+			num_turns?: number;
+		};
 		try {
 			envelope = JSON.parse(stdout);
 		} catch {
@@ -93,7 +212,11 @@ async function spawnClaude(args: string[]): Promise<ClaudeResult> {
 				true,
 			);
 		}
-		return { result: envelope.result, sessionId: envelope.session_id };
+		return {
+			result: envelope.result,
+			sessionId: envelope.session_id,
+			cost: readCost(envelope),
+		};
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -123,8 +246,11 @@ async function withTransportRetry<T>(
 	}
 }
 
-function runClaude(args: string[]): Promise<ClaudeResult> {
-	return withTransportRetry("claude call", () => spawnClaude(args));
+function runClaude(
+	args: string[],
+	options: SpawnOptions = {},
+): Promise<ClaudeResult> {
+	return withTransportRetry("claude call", () => spawnClaude(args, options));
 }
 
 export interface TutorTurn {
@@ -132,30 +258,41 @@ export interface TutorTurn {
 	outline?: OutlineItem[];
 	exercise?: Exercise;
 	sessionId: string;
+	cost?: TurnCost;
 }
 
-// Per-lesson system prompt: the base tutor instructions plus the learner's
-// preferred code language (the topic wins when it implies its own language)
-export function composeSystemPrompt(language?: string): string {
-	if (!language?.trim()) return tutorPrompt;
-	return `${tutorPrompt}\n# Learner preferences\n\nWhen a code example or exercise fits and the topic does not imply a specific language, write it in ${language.trim()}.\n`;
+// The CLI flags every turn of a lesson shares. Everything that varies between
+// lesson modes comes from the runtime, so adding a mode never touches this.
+function tutorArgs(
+	runtime: TutorRuntime,
+	format: "json" | "stream-json",
+): string[] {
+	const args = [
+		"-p",
+		"--tools",
+		runtime.tools.join(","),
+		"--output-format",
+		format,
+	];
+	if (format === "stream-json") {
+		args.push("--include-partial-messages", "--verbose");
+	}
+	args.push(...HERMETIC_ARGS);
+	if (runtime.model) args.push("--model", runtime.model);
+	if (runtime.maxBudgetUsd) {
+		args.push("--max-budget-usd", String(runtime.maxBudgetUsd));
+	}
+	args.push("--system-prompt", runtime.systemPrompt);
+	return args;
 }
 
 export async function runTutorTurn(
 	userMessage: string,
-	sessionId?: string,
-	options: { fork?: boolean; systemPrompt?: string } = {},
+	sessionId: string | undefined,
+	runtime: TutorRuntime,
+	options: { fork?: boolean } = {},
 ): Promise<TutorTurn> {
-	const systemPrompt = options.systemPrompt ?? tutorPrompt;
-	const args = [
-		"-p",
-		"--tools",
-		"",
-		"--output-format",
-		"json",
-		"--system-prompt",
-		systemPrompt,
-	];
+	const args = tutorArgs(runtime, "json");
 	if (sessionId) {
 		args.push("--resume", sessionId);
 		// Forked turns get a fresh session id and leave the base session
@@ -166,14 +303,21 @@ export async function runTutorTurn(
 	}
 	args.push(userMessage);
 
-	const turn = await runClaude(args);
+	const turn = await runClaude(args, {
+		cwd: runtime.cwd,
+		timeoutMs: runtime.timeoutMs,
+	});
 	try {
-		return { ...parseReply(turn.result), sessionId: turn.sessionId };
+		return {
+			...parseReply(turn.result),
+			sessionId: turn.sessionId,
+			cost: turn.cost,
+		};
 	} catch (error) {
 		if (!(error instanceof CardProtocolError)) throw error;
 		// Repair against the id this turn returned — for a fork that is the
 		// fork's own id, so the base session stays untouched
-		return repairCard(turn.sessionId, error, systemPrompt);
+		return repairCard(turn.sessionId, error, runtime);
 	}
 }
 
@@ -190,7 +334,7 @@ const CARD_REPAIR_REQUEST =
 async function repairCard(
 	sessionId: string,
 	failure: CardProtocolError,
-	systemPrompt: string,
+	runtime: TutorRuntime,
 ): Promise<TutorTurn> {
 	let lastFailure = failure;
 	for (let attempt = 0; attempt < MAX_CARD_REPAIRS; attempt++) {
@@ -198,20 +342,21 @@ async function repairCard(
 			`unparseable card, repair ${attempt + 1}/${MAX_CARD_REPAIRS}:`,
 			lastFailure.message,
 		);
-		const turn = await runClaude([
-			"-p",
-			"--tools",
-			"",
-			"--output-format",
-			"json",
-			"--system-prompt",
-			systemPrompt,
-			"--resume",
-			sessionId,
-			`${CARD_REPAIR_REQUEST}\n\nThe parser reported: ${lastFailure.message}`,
-		]);
+		const turn = await runClaude(
+			[
+				...tutorArgs(runtime, "json"),
+				"--resume",
+				sessionId,
+				`${CARD_REPAIR_REQUEST}\n\nThe parser reported: ${lastFailure.message}`,
+			],
+			{ cwd: runtime.cwd, timeoutMs: runtime.timeoutMs },
+		);
 		try {
-			return { ...parseReply(turn.result), sessionId: turn.sessionId };
+			return {
+				...parseReply(turn.result),
+				sessionId: turn.sessionId,
+				cost: turn.cost,
+			};
 		} catch (error) {
 			if (!(error instanceof CardProtocolError)) throw error;
 			lastFailure = error;
@@ -245,18 +390,25 @@ async function repairCard(
 // surfaces a title/body preview from the partial JSON as it arrives, and
 // parses the authoritative card from the final result line. Not used for
 // prefetch (that runs in the background and is often discarded).
+// What the webview shows while a turn is in flight: the card as it is written,
+// plus what the tutor is doing in between when it has tools to work with.
+export interface TurnPreview {
+	title: string;
+	body: string;
+	activity?: string;
+}
+
 export async function runTutorTurnStreaming(
 	userMessage: string,
 	sessionId: string | undefined,
+	runtime: TutorRuntime,
 	options: {
-		systemPrompt?: string;
 		// Fork the resumed session so this turn advances only a throwaway branch;
 		// the caller adopts the branch (finishTurn) only on a card it can use.
 		fork?: boolean;
-		onPreview?: (preview: { title: string; body: string }) => void;
+		onPreview?: (preview: TurnPreview) => void;
 	} = {},
 ): Promise<TutorTurn> {
-	const systemPrompt = options.systemPrompt ?? tutorPrompt;
 	// Retry covers the spawn only. Parsing and repair sit outside it: once a
 	// reply is in hand the turn is committed to the session, and re-running the
 	// message would teach a second step rather than recover this one.
@@ -264,16 +416,20 @@ export async function runTutorTurnStreaming(
 		streamTutorTurn(
 			userMessage,
 			sessionId,
-			systemPrompt,
+			runtime,
 			Boolean(options.fork),
 			options.onPreview,
 		),
 	);
 	try {
-		return { ...parseReply(turn.result), sessionId: turn.sessionId };
+		return {
+			...parseReply(turn.result),
+			sessionId: turn.sessionId,
+			cost: turn.cost,
+		};
 	} catch (error) {
 		if (!(error instanceof CardProtocolError)) throw error;
-		return repairCard(turn.sessionId, error, systemPrompt);
+		return repairCard(turn.sessionId, error, runtime);
 	}
 }
 
@@ -282,21 +438,11 @@ export async function runTutorTurnStreaming(
 async function streamTutorTurn(
 	userMessage: string,
 	sessionId: string | undefined,
-	systemPrompt: string,
+	runtime: TutorRuntime,
 	fork: boolean,
-	onPreview?: (preview: { title: string; body: string }) => void,
+	onPreview?: (preview: TurnPreview) => void,
 ): Promise<ClaudeResult> {
-	const args = [
-		"-p",
-		"--tools",
-		"",
-		"--output-format",
-		"stream-json",
-		"--include-partial-messages",
-		"--verbose",
-		"--system-prompt",
-		systemPrompt,
-	];
+	const args = tutorArgs(runtime, "stream-json");
 	if (sessionId) {
 		args.push("--resume", sessionId);
 		// Fork a foreground turn the same way prefetch does: an unrecoverable
@@ -307,6 +453,7 @@ async function streamTutorTurn(
 	args.push(userMessage);
 
 	const proc = Bun.spawn([claudeBinary(), ...args], {
+		cwd: runtime.cwd,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -314,15 +461,17 @@ async function streamTutorTurn(
 	const timeout = setTimeout(() => {
 		timedOut = true;
 		proc.kill();
-	}, TURN_TIMEOUT_MS);
+	}, runtime.timeoutMs);
 	// Drain stderr alongside stdout: left unread, a chatty CLI can fill the pipe
 	// buffer and stall the process until the turn times out
 	const stderrText = new Response(proc.stderr).text().catch(() => "");
 
 	try {
 		let raw = ""; // accumulated assistant text (a partial JSON object)
+		let activity: string | undefined; // what the tutor is doing between text
 		let resultText: string | undefined;
 		let resultSession: string | undefined;
+		let resultCost: TurnCost | undefined;
 		let isError = false;
 		const decoder = new TextDecoder();
 		let buffer = "";
@@ -332,9 +481,13 @@ async function streamTutorTurn(
 			let event: {
 				type?: string;
 				event?: { type?: string; delta?: { type?: string; text?: string } };
+				message?: { content?: unknown };
 				result?: string;
 				session_id?: string;
 				is_error?: boolean;
+				total_cost_usd?: number;
+				duration_ms?: number;
+				num_turns?: number;
 			};
 			try {
 				event = JSON.parse(line);
@@ -347,10 +500,22 @@ async function streamTutorTurn(
 				event.event.delta?.type === "text_delta"
 			) {
 				raw += event.event.delta.text ?? "";
-				onPreview?.(extractPreview(raw));
+				onPreview?.({ ...extractPreview(raw), activity });
+			} else if (event.type === "assistant") {
+				// A tool call means the card hasn't started yet: whatever text came
+				// before it was the tutor talking to itself, not the reply. Drop it
+				// so the preview can't show a fragment that isn't in the card, and
+				// report the lookup instead — with tools this is most of the wait.
+				const use = lastToolUse(event.message?.content);
+				if (use) {
+					raw = "";
+					activity = describeToolUse(use, runtime.cwd);
+					onPreview?.({ title: "", body: "", activity });
+				}
 			} else if (event.type === "result") {
 				resultText = event.result;
 				resultSession = event.session_id;
+				resultCost = readCost(event);
 				isError = Boolean(event.is_error);
 			}
 		};
@@ -370,7 +535,7 @@ async function streamTutorTurn(
 		await proc.exited;
 		if (timedOut) {
 			throw new ClaudeTransportError(
-				`streaming turn timed out after ${TURN_TIMEOUT_MS / 1000}s`,
+				`streaming turn timed out after ${runtime.timeoutMs / 1000}s`,
 				false,
 			);
 		}
@@ -380,9 +545,64 @@ async function streamTutorTurn(
 				true,
 			);
 		}
-		return { result: resultText, sessionId: resultSession };
+		return {
+			result: resultText,
+			sessionId: resultSession,
+			cost: resultCost,
+		};
 	} finally {
 		clearTimeout(timeout);
+	}
+}
+
+interface ToolUse {
+	name: string;
+	input: Record<string, unknown>;
+}
+
+// The last tool call in an assistant message, or undefined if it was plain
+// text. A message can carry several; the last one is the freshest thing to
+// show, and they all complete before the next message arrives anyway.
+//
+// A read of /dev/null is skipped: the CLI opens each turn with one, and
+// reporting it would flash a nonsense path at the learner and inflate every
+// count of what the tutor actually looked at.
+function lastToolUse(content: unknown): ToolUse | undefined {
+	if (!Array.isArray(content)) return undefined;
+	let found: ToolUse | undefined;
+	for (const block of content) {
+		if (block?.type !== "tool_use" || typeof block.name !== "string") continue;
+		const input =
+			block.input && typeof block.input === "object"
+				? (block.input as Record<string, unknown>)
+				: {};
+		if (input.file_path === "/dev/null") continue;
+		found = { name: block.name, input };
+	}
+	return found;
+}
+
+// One short line about a lookup in progress, for the streaming card. Paths come
+// back absolute; inside a project they read better cut down to the part the
+// learner would recognise.
+function describeToolUse(use: ToolUse, cwd?: string): string {
+	const relative = (value: unknown): string => {
+		const text = typeof value === "string" ? value : "";
+		const trimmed =
+			cwd && text.startsWith(`${cwd}/`) ? text.slice(cwd.length + 1) : text;
+		return trimmed.length > 60 ? `…${trimmed.slice(-59)}` : trimmed;
+	};
+	const file = relative(use.input.file_path);
+	const pattern = relative(use.input.pattern);
+	switch (use.name) {
+		case "Read":
+			return file ? `Reading ${file}` : "Reading a file";
+		case "Grep":
+			return pattern ? `Searching for ${pattern}` : "Searching the project";
+		case "Glob":
+			return pattern ? `Looking for ${pattern}` : "Looking through the files";
+		default:
+			return "Looking through the project";
 	}
 }
 
@@ -486,50 +706,106 @@ export function salvageCard(raw: string): Card | undefined {
 		title,
 		body,
 		conceptId: conceptId || undefined,
+		// A plain string on the card, so it comes back the same tolerant way the
+		// title and body do — unlike the structured extras below.
+		takeaway: extractJsonString(raw, "takeaway")?.trim() || undefined,
 	};
 }
 
-// Explain one highlighted term in its lesson context. Stateless and on the
-// fast Haiku tier — a quick lookup that never touches the lesson session.
+// Answer a question about one section of one card, for the conversation that
+// hangs beside it. Stateless like the other side-calls: everything it knows
+// comes in from the webview, which holds the cards and the thread. It writes
+// teaching prose rather than judging something it was handed the answer to, so
+// it sits on the same tier exercise regeneration does.
+export async function discussSection(input: {
+	topic: string;
+	cardTitle: string;
+	section: string;
+	material: string;
+	history: readonly ThreadMessage[];
+	question: string;
+}): Promise<string> {
+	// The thread is replayed as text rather than as real conversation turns:
+	// a side-call is one -p invocation with no session, so this is the only way
+	// the earlier exchange reaches the model at all.
+	const conversation = input.history
+		.map((message) =>
+			message.role === "user"
+				? `Learner asked: ${message.text}`
+				: `You answered: ${message.text}`,
+		)
+		.join("\n\n");
+	const { result } = await runSideCall(
+		discussPrompt,
+		[
+			`Lesson topic: ${input.topic}`,
+			`The lesson so far:\n\n${input.material}`,
+			`The card the learner is on: ${input.cardTitle}`,
+			`The section they stopped on:\n\n${input.section}`,
+			conversation ? `Earlier in this conversation:\n\n${conversation}` : "",
+			`Their question: ${input.question}`,
+		]
+			.filter(Boolean)
+			.join("\n\n---\n\n"),
+		{ model: EXERCISE_MODEL },
+	);
+	return result.trim();
+}
+
+// One stateless side-call: no session, no tools, none of the machine's
+// customizations, and the fast model. Everything the three callers below share
+// lives here, so a side-call can't drift onto a slower or costlier footing by
+// being written slightly differently from its neighbours.
+function runSideCall(
+	systemPrompt: string,
+	userMessage: string,
+	// A call that generates rather than judges can raise the tier; everything
+	// else about the footing stays shared.
+	options: { model?: string } = {},
+): Promise<ClaudeResult> {
+	return runClaude(
+		[
+			"-p",
+			...HERMETIC_ARGS,
+			"--tools",
+			"",
+			"--output-format",
+			"json",
+			// Never touch the lesson session or its in-flight prefetch fork
+			"--no-session-persistence",
+			"--model",
+			options.model ?? SIDE_CALL_MODEL,
+			"--system-prompt",
+			systemPrompt,
+			userMessage,
+		],
+		{ timeoutMs: SIDE_CALL_TIMEOUT_MS, env: SIDE_CALL_ENV },
+	);
+}
+
+// Explain one highlighted term in its lesson context.
 export async function explainTerm(
 	term: string,
 	context: string,
 ): Promise<string> {
-	const { result } = await runClaude([
-		"-p",
-		// Skip CLAUDE.md/skills/hooks/MCP startup — none are needed here and
-		// they add latency and (occasionally) multi-second MCP-connect stalls
-		"--safe-mode",
-		"--tools",
-		"",
-		"--output-format",
-		"json",
-		"--no-session-persistence",
-		"--model",
-		EXPLAIN_MODEL,
-		"--system-prompt",
+	const { result } = await runSideCall(
 		explainPrompt,
 		`Term to explain: ${term}\n\nContext it appeared in:\n${context}`,
-	]);
+	);
 	return result.trim();
 }
 
-// Stateless one-shot repair of a Mermaid diagram that failed to parse.
+// One-shot repair of a Mermaid diagram that failed to parse. Mechanical work
+// against a parser error, and it degrades safely: a fix that still doesn't
+// parse leaves the diagram hidden rather than showing something wrong.
 export async function fixMermaidDiagram(
 	code: string,
 	error: string,
 ): Promise<string> {
-	const { result } = await runClaude([
-		"-p",
-		"--tools",
-		"",
-		"--output-format",
-		"json",
-		"--no-session-persistence",
-		"--system-prompt",
+	const { result } = await runSideCall(
 		mermaidFixPrompt,
 		`This Mermaid diagram fails to parse.\n\nParser error:\n${error}\n\nDiagram:\n${code}`,
-	]);
+	);
 	return result
 		.trim()
 		.replace(/^```(?:mermaid)?\s*/i, "")
@@ -537,8 +813,10 @@ export async function fixMermaidDiagram(
 		.trim();
 }
 
-// Grade an exercise answer in a stateless one-shot call so the lesson
-// session (and any in-flight prefetch fork) stays untouched.
+// Grade an exercise answer. The learner is sitting in front of a submitted
+// answer waiting for this one, and the call is given the expected answer up
+// front — it judges one short reply against it rather than working the problem
+// out, which is why it sits on the fast tier with the other side-calls.
 export async function checkExerciseAnswer(
 	exercise: Exercise,
 	userAnswer: string | null,
@@ -547,37 +825,111 @@ export async function checkExerciseAnswer(
 		userAnswer === null
 			? 'The learner pressed "I don\'t know".'
 			: `Learner's answer: ${userAnswer}`;
-	const { result } = await runClaude([
-		"-p",
-		"--tools",
-		"",
-		"--output-format",
-		"json",
-		"--no-session-persistence",
-		"--system-prompt",
+	const { result } = await runSideCall(
 		exerciseCheckPrompt,
 		`Question: ${exercise.question}\n\nSnippet (${exercise.code.language}):\n${exercise.code.source}\n\nExpected answer: ${exercise.answer}\n\n${learnerPart}`,
-	]);
-	const start = result.indexOf("{");
-	const end = result.lastIndexOf("}");
-	if (start === -1 || end <= start) {
-		throw new Error(`check reply contained no JSON: ${result.slice(0, 200)}`);
-	}
-	let parsed: { correct?: unknown; explanation?: unknown };
-	try {
-		parsed = JSON.parse(result.slice(start, end + 1));
-	} catch (error) {
-		// Usually a raw newline or an unescaped quote inside the explanation, or
-		// a reply that got cut off before its closing brace
-		throw new Error(
-			`check reply was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-	const { correct, explanation } = parsed;
+	);
+	const { correct, explanation } = readJsonObject(result, "check") as {
+		correct?: unknown;
+		explanation?: unknown;
+	};
 	if (typeof correct !== "boolean" || typeof explanation !== "string") {
 		throw new Error(`check reply malformed: ${result.slice(0, 200)}`);
 	}
 	return { correct, explanation };
+}
+
+// Write a replacement for an exercise the learner rejected as unclear, unfair,
+// or impossible. `material` is the lesson text the new exercise has to be
+// answerable from — the webview holds the cards, so it sends them rather than
+// this process guessing which ones taught the concept.
+export async function regenerateExercise(
+	previous: Exercise,
+	material: string,
+	concept?: string,
+): Promise<Exercise> {
+	const request = [
+		concept ? `Concept: ${concept}` : undefined,
+		`Lesson material for this concept:\n\n${material}`,
+		`Rejected exercise:\nQuestion: ${previous.question}\nSnippet (${previous.code.language}):\n${previous.code.source}\nAnswer: ${previous.answer}`,
+	]
+		.filter(Boolean)
+		.join("\n\n");
+
+	// An exercise that blanks a comment is the failure this feature exists to
+	// undo, so it is worth one re-ask — but a second one that still does it is
+	// kept rather than surfaced as an error: a mediocre exercise the learner can
+	// reject again beats a card that shows them a failure message.
+	let fallback: Exercise | undefined;
+	let note = "";
+	for (let attempt = 0; attempt < MAX_EXERCISE_ATTEMPTS; attempt++) {
+		const { result } = await runSideCall(
+			exerciseRegenPrompt,
+			note ? `${request}\n\n${note}` : request,
+			{ model: EXERCISE_MODEL },
+		);
+		const written = parseExercise(readJsonObject(result, "exercise"));
+		if (!written || !hasOneBlank(written.code.source)) {
+			note = `Your last reply was unusable: the snippet must contain exactly one ${BLANK} blank. Write the exercise again.`;
+			continue;
+		}
+		// The concept is the app's, not the model's — the practice panel groups
+		// exercises by it and a regenerated one must stay where it was.
+		const exercise = { ...written, conceptId: previous.conceptId };
+		if (!blankIsInsideComment(exercise.code.source)) return exercise;
+		fallback ??= exercise;
+		note = `Your last reply put the blank inside a comment, where the learner can only guess your wording. Move it onto a line of real code and write the exercise again.`;
+	}
+	if (fallback) {
+		console.warn("regenerated exercise still blanks a comment; using it");
+		return fallback;
+	}
+	throw new Error("the tutor did not write a usable exercise");
+}
+
+// The blank a learner fills in. Four underscores, the same marker the tutor
+// prompt asks for and the practice panel highlights.
+const BLANK = "____";
+
+export function hasOneBlank(source: string): boolean {
+	return source.split(BLANK).length === 2;
+}
+
+// Line-comment markers, matched only at a line start or after whitespace so a
+// URL's `//` and a shell flag's `--` don't read as one. Block comments and
+// docstrings are deliberately not covered: this check exists to catch the
+// common failure cheaply, and a false negative just means a mediocre exercise
+// the learner can reject again.
+const LINE_COMMENT = /(?:^|\s)(?:#|\/\/)/;
+
+// Is the blank inside a comment? Then the learner is being asked to guess the
+// tutor's wording rather than what the code does — the exact shape of question
+// this app kept producing, and the reason a rejected exercise is re-asked.
+export function blankIsInsideComment(source: string): boolean {
+	const line = source.split("\n").find((text) => text.includes(BLANK));
+	if (!line) return false;
+	return LINE_COMMENT.test(line.slice(0, line.indexOf(BLANK)));
+}
+
+// Pull the one JSON object out of a side-call reply. Each prompt asks for bare
+// JSON; a reply that arrives wrapped in a fence or a sentence still parses.
+function readJsonObject(result: string, label: string): unknown {
+	const start = result.indexOf("{");
+	const end = result.lastIndexOf("}");
+	if (start === -1 || end <= start) {
+		throw new Error(
+			`${label} reply contained no JSON: ${result.slice(0, 200)}`,
+		);
+	}
+	try {
+		return JSON.parse(result.slice(start, end + 1));
+	} catch (error) {
+		// Usually a raw newline or an unescaped quote inside a string, or a reply
+		// that got cut off before its closing brace
+		throw new Error(
+			`${label} reply was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 // The tutor is instructed to reply with bare JSON, but models occasionally
@@ -639,13 +991,45 @@ export function parseReply(text: string): {
 			body: card.body,
 			conceptId:
 				typeof card.conceptId === "string" ? card.conceptId : undefined,
+			takeaway: parseTakeaway(card.takeaway),
 			options: parseOptions(card.options),
+			// Honoured only on the card it belongs to. Taking the offer throws
+			// this lesson away and starts another, which is the right thing under
+			// an unanswered level question and destructive anywhere else.
+			prerequisite:
+				card.type === "question"
+					? parsePrerequisite(card.prerequisite)
+					: undefined,
 			suggestions: parseSuggestions(card.suggestions),
 			notes: parseNotes(card.notes),
 		},
 		outline: parseOutline(parsed.outline),
 		exercise: parseExercise(parsed.exercise),
 	};
+}
+
+// The one line worth keeping from a card. Optional by design — most cards have
+// none — so anything that isn't usable text is dropped rather than surfaced as
+// an empty panel under the card.
+function parseTakeaway(raw: unknown): string | undefined {
+	if (typeof raw !== "string") return undefined;
+	return raw.trim() || undefined;
+}
+
+// Both fields or nothing: the button reads "Start with <topic>" and explains
+// itself with the reason, so half an offer is not one.
+function parsePrerequisite(raw: unknown): Prerequisite | undefined {
+	const value = raw as { topic?: unknown; reason?: unknown } | null;
+	if (
+		!value ||
+		typeof value.topic !== "string" ||
+		typeof value.reason !== "string"
+	) {
+		return undefined;
+	}
+	const topic = value.topic.trim();
+	const reason = value.reason.trim();
+	return topic && reason ? { topic, reason } : undefined;
 }
 
 function parseNotes(raw: unknown): Card["notes"] {

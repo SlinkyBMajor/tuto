@@ -1,9 +1,23 @@
 // Smoke test for the tutor loop: level question with options, then a step.
 // Run with: pnpm run smoke
+
 import { runTutorTurn } from "../src/bun/claude";
+import { openingMessage, runtimeFor } from "../src/bun/lesson-modes";
+import type { LessonConfig } from "../src/shared/types";
+import { longestSegment, takeawayProblem } from "./card-prose";
+
+// Two sentences of at most 25 words each, plus slack
+const MAX_SEGMENT_WORDS = 60;
+
+const config: LessonConfig = { mode: "topic", topic: "Kafka" };
+const runtime = runtimeFor(config);
 
 console.log("Turn 1: starting a lesson without stating a level…");
-const first = await runTutorTurn("I want to learn about: Kafka");
+const first = await runTutorTurn(
+	await openingMessage(config),
+	undefined,
+	runtime,
+);
 console.log(JSON.stringify(first.card, null, 2));
 
 if (first.card.type !== "question" || first.card.options?.length !== 3) {
@@ -13,7 +27,11 @@ if (first.card.type !== "question" || first.card.options?.length !== 3) {
 
 const choice = first.card.options[1];
 console.log(`\nTurn 2: answering with option "${choice?.label}"…`);
-const second = await runTutorTurn(choice?.label ?? "", first.sessionId);
+const second = await runTutorTurn(
+	choice?.label ?? "",
+	first.sessionId,
+	runtime,
+);
 console.log(JSON.stringify(second.card, null, 2));
 console.log("outline:", JSON.stringify(second.outline));
 
@@ -42,7 +60,32 @@ console.log(
 	JSON.stringify(second.card.notes.sectionPath),
 );
 
+// The learner steps through a card one section at a time, so a section that
+// runs long is as much a failure as a card that runs long
+const longest = longestSegment(second.card.body);
+if (longest.words > MAX_SEGMENT_WORDS) {
+	console.error(
+		`FAIL: a section runs to ${longest.words} words (max ${MAX_SEGMENT_WORDS}):\n  ${longest.text}`,
+	);
+	process.exit(1);
+}
+
+// A takeaway is optional by design, so its absence is not a failure — but one
+// that arrives has to be the single line it promises to be.
+const takeaway = second.card.takeaway;
+if (takeaway) {
+	const problem = takeawayProblem(takeaway, second.card.title);
+	if (problem) {
+		console.error(`FAIL: the takeaway ${problem}:\n  ${takeaway}`);
+		process.exit(1);
+	}
+}
+
 const words = second.card.body.split(/\s+/).length;
 console.log(`\nsession resumed: ${second.sessionId === first.sessionId}`);
 console.log(`turn 2 body word count: ${words}`);
+console.log(`longest section: ${longest.words} words`);
+console.log(
+	`takeaway: ${takeaway ?? "(none — the card had nothing to distil)"}`,
+);
 console.log("PASS");

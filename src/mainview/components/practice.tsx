@@ -1,6 +1,7 @@
 import {
 	CheckmarkCircle02Icon,
 	Idea01Icon,
+	RefreshIcon,
 	Target01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -8,6 +9,7 @@ import { useState } from "react";
 import { CardMarkdown } from "@/components/card-markdown";
 import { Button } from "@/components/ui/button";
 import {
+	CardAction,
 	CardContent,
 	CardHeader,
 	CardTitle,
@@ -22,20 +24,30 @@ import type { Exercise } from "../../shared/types";
 export interface PracticeItem {
 	id: number;
 	exercise: Exercise;
-	status: "open" | "checking" | "correct" | "wrong";
+	status: "open" | "checking" | "regenerating" | "correct" | "wrong";
 	userAnswer?: string;
 	explanation?: string;
 	error?: string;
+}
+
+// A graded verdict, as opposed to the two transient states. Only these two are
+// persisted, and only these two count towards the "done" tally.
+function isGraded(status: PracticeItem["status"]): boolean {
+	return status === "correct" || status === "wrong";
 }
 
 export function PracticePanel({
 	items,
 	onUpdate,
 	conceptTitle,
+	lessonMaterial,
 }: {
 	items: PracticeItem[];
 	onUpdate: (id: number, patch: Partial<PracticeItem>) => void;
 	conceptTitle?: (conceptId?: string) => string | undefined;
+	// The lesson text a replacement exercise must be answerable from. Absent
+	// when there is no lesson behind the panel, which hides the button.
+	lessonMaterial?: (conceptId?: string) => string;
 }) {
 	if (items.length === 0) {
 		return (
@@ -50,7 +62,7 @@ export function PracticePanel({
 		);
 	}
 
-	const done = items.filter((item) => item.status !== "open").length;
+	const done = items.filter((item) => isGraded(item.status)).length;
 
 	return (
 		<div className="space-y-4 pb-24">
@@ -70,6 +82,7 @@ export function PracticePanel({
 					item={item}
 					index={index}
 					concept={conceptTitle?.(item.exercise.conceptId)}
+					lessonMaterial={lessonMaterial}
 					onUpdate={onUpdate}
 				/>
 			))}
@@ -81,16 +94,53 @@ function ExerciseCard({
 	item,
 	index,
 	concept,
+	lessonMaterial,
 	onUpdate,
 }: {
 	item: PracticeItem;
 	index: number;
 	concept?: string;
+	lessonMaterial?: (conceptId?: string) => string;
 	onUpdate: (id: number, patch: Partial<PracticeItem>) => void;
 }) {
 	const [answer, setAnswer] = useState("");
 	const { exercise } = item;
 	const solved = item.status === "correct";
+	const busy = item.status === "checking" || item.status === "regenerating";
+
+	// Ask for a different exercise on the same concept. An exercise the model
+	// got wrong — a blank nobody can fill, an answer the lesson never taught —
+	// is otherwise a dead card the learner can only skip.
+	async function regenerate() {
+		if (!lessonMaterial) return;
+		const previousStatus = item.status;
+		onUpdate(item.id, { status: "regenerating", error: undefined });
+		const result = await bun
+			.regenerateExercise({
+				exercise,
+				material: lessonMaterial(exercise.conceptId),
+				concept,
+			})
+			.catch((error: unknown) => ({
+				ok: false as const,
+				error: error instanceof Error ? error.message : String(error),
+			}));
+		if (result.ok) {
+			setAnswer("");
+			onUpdate(item.id, {
+				exercise: result.exercise,
+				status: "open",
+				// The verdict belonged to the question that just went away
+				userAnswer: undefined,
+				explanation: undefined,
+			});
+		} else {
+			onUpdate(item.id, {
+				status: previousStatus,
+				error: `Couldn't write a new question: ${result.error}`,
+			});
+		}
+	}
 
 	async function check(userAnswer: string | null) {
 		onUpdate(item.id, {
@@ -110,7 +160,10 @@ function ExerciseCard({
 				explanation: result.explanation,
 			});
 		} else {
-			onUpdate(item.id, { status: "open", error: result.error });
+			onUpdate(item.id, {
+				status: "open",
+				error: `Checking failed: ${result.error}`,
+			});
 		}
 	}
 
@@ -134,6 +187,20 @@ function ExerciseCard({
 				<CardTitle className="text-[1.2rem] leading-[1.4] font-[560] tracking-[-0.018em]">
 					{exercise.question}
 				</CardTitle>
+				{lessonMaterial && (
+					<CardAction>
+						<Button
+							variant="ghost"
+							size="sm"
+							className="rounded-xl text-muted-foreground"
+							disabled={busy}
+							onClick={() => void regenerate()}
+						>
+							<HugeiconsIcon icon={RefreshIcon} />
+							{item.status === "regenerating" ? "Writing…" : "New question"}
+						</Button>
+					</CardAction>
+				)}
 			</CardHeader>
 			<CardContent className="[&_.code-block]:my-0">
 				<CardMarkdown
@@ -142,7 +209,7 @@ function ExerciseCard({
 				/>
 			</CardContent>
 			{item.status === "open" && (
-				<CardContent className="flex flex-col gap-2.5">
+				<CardContent>
 					<form
 						className="flex gap-2.5"
 						onSubmit={(event) => {
@@ -172,20 +239,22 @@ function ExerciseCard({
 							I don't know
 						</Button>
 					</form>
-					{item.error && (
-						<p className="text-sm text-destructive">
-							Checking failed: {item.error}
-						</p>
-					)}
 				</CardContent>
 			)}
-			{item.status === "checking" && (
+			{busy && (
 				<CardContent className="space-y-2.5">
 					<Skeleton className="h-4 w-3/5 rounded-md" />
 					<Skeleton className="h-4 w-4/5 rounded-md" />
 				</CardContent>
 			)}
-			{(item.status === "correct" || item.status === "wrong") && (
+			{/* Either call can fail, and a regeneration can fail from a state
+			    that has no form to hang the message under. */}
+			{item.error && !busy && (
+				<CardContent>
+					<p className="text-sm text-destructive">{item.error}</p>
+				</CardContent>
+			)}
+			{isGraded(item.status) && (
 				<CardContent>
 					<div
 						className={cn(

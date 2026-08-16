@@ -1,12 +1,15 @@
 import {
 	ArrowLeft01Icon,
 	BookOpen01Icon,
+	Flag01Icon,
+	FolderCodeIcon,
 	Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { shortPath } from "@/components/project-picker";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { OutlineItem } from "../../shared/types";
+import type { LessonGoal, OutlineItem, ProjectRef } from "../../shared/types";
 
 export interface LessonStats {
 	cards: number;
@@ -18,6 +21,8 @@ export interface LessonStats {
 // the outline as a navigable list. The feed itself stays on the right.
 export function LessonSidebar({
 	topic,
+	project,
+	goal,
 	outline,
 	currentIndex,
 	stats,
@@ -27,6 +32,10 @@ export function LessonSidebar({
 	onCollapse,
 }: {
 	topic: string;
+	// Set when the lesson is being taught from a project on this machine
+	project?: ProjectRef;
+	// Set when this lesson is groundwork for another subject
+	goal?: LessonGoal;
 	outline: OutlineItem[] | null;
 	currentIndex: number;
 	stats: LessonStats;
@@ -46,13 +55,42 @@ export function LessonSidebar({
 		<aside className="flex w-[20rem] shrink-0 flex-col border-r border-border bg-foreground/3">
 			<div className="flex items-start gap-3 px-4 pt-4 pb-3">
 				<span className="grid size-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground">
-					<HugeiconsIcon icon={BookOpen01Icon} className="size-4.5" />
+					<HugeiconsIcon
+						icon={project ? FolderCodeIcon : BookOpen01Icon}
+						className="size-4.5"
+					/>
 				</span>
 				<div className="min-w-0 flex-1 pt-0.5">
 					<p className="text-xs text-muted-foreground">Lesson</p>
 					<h2 className="text-[0.95rem] leading-snug font-[560] tracking-[-0.012em]">
 						{topic || "Untitled lesson"}
 					</h2>
+					{project && (
+						// The lesson is only as true as the code it was read from, so
+						// name that folder where the learner can always see it
+						<p
+							className="mt-1 truncate text-xs text-muted-foreground"
+							title={project.path}
+						>
+							{shortPath(project.path)}
+						</p>
+					)}
+					{goal && (
+						// A detour is easy to mistake for having lost the thread, so the
+						// destination stays on screen for the whole of it — not only on
+						// the recap card at the end.
+						<p
+							className="mt-1 flex items-center gap-1 text-xs text-marker"
+							title={`This lesson is groundwork for ${goal.topic}`}
+						>
+							<HugeiconsIcon
+								icon={Flag01Icon}
+								className="size-3 shrink-0"
+								strokeWidth={2}
+							/>
+							<span className="truncate">on the way to {goal.topic}</span>
+						</p>
+					)}
 				</div>
 				<Button
 					type="button"

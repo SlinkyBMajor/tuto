@@ -1,22 +1,31 @@
 import { BrowserView, BrowserWindow, Updater } from "electrobun/bun";
+import { stripCardRefs } from "../shared/card-refs";
 import type {
+	AskResult,
 	CheckResult,
+	ExerciseResult,
 	ExplainResult,
+	LessonConfig,
 	MermaidFixResult,
 	TurnResult,
 	TutoRPC,
 } from "../shared/types";
 import {
 	checkExerciseAnswer,
-	composeSystemPrompt,
+	discussSection,
 	explainTerm,
 	fixMermaidDiagram,
+	regenerateExercise,
 	runTutorTurn,
 	runTutorTurnStreaming,
+	type TurnPreview,
+	type TutorRuntime,
 	type TutorTurn,
 } from "./claude";
+import { modeOf, openingMessage, runtimeFor } from "./lesson-modes";
 import { NotesDoc } from "./notes";
 import { makeLessonId } from "./paths";
+import { describeProject, pickProject } from "./project";
 import * as store from "./store";
 
 const DEV_SERVER_URL = "http://localhost:5173";
@@ -37,17 +46,23 @@ async function getMainViewUrl(): Promise<string> {
 	return "views://mainview/index.html";
 }
 
-// One lesson active at a time. The Claude session carries the conversation;
-// lessonId/notes/language are the persistence-facing state for save/resume.
-let lessonId: string | undefined;
-let lessonSessionId: string | undefined;
-let lessonLanguage: string | undefined;
-let lessonSystemPrompt = composeSystemPrompt();
+// One lesson open at a time. Its config says what kind of lesson it is and the
+// runtime is derived from that once, at the start, so every turn of a lesson
+// runs exactly the same way. The Claude session carries the conversation.
+interface ActiveLesson {
+	id: string;
+	config: LessonConfig;
+	runtime: TutorRuntime;
+	// Absent until the first turn comes back with a session to resume
+	sessionId?: string;
+}
+
+let active: ActiveLesson | undefined;
 const notes = new NotesDoc();
 
 // Push a streaming card preview to the webview. Defined against the typed rpc
 // object below; safe to call once the window has wired up its transport.
-function sendPreview(preview: { title: string; body: string }) {
+function sendPreview(preview: TurnPreview) {
 	rpc.send.streamCard(preview);
 }
 
@@ -58,35 +73,53 @@ let prefetch:
 	| { baseSessionId: string; promise: Promise<TutorTurn> }
 	| undefined;
 
-function startPrefetch() {
-	if (!lessonSessionId) return;
-	const promise = runTutorTurn("continue", lessonSessionId, {
+function startPrefetch(lesson: ActiveLesson) {
+	const sessionId = lesson.sessionId;
+	if (!sessionId || !modeOf(lesson.config).prefetch) return;
+	const promise = runTutorTurn("continue", sessionId, lesson.runtime, {
 		fork: true,
-		systemPrompt: lessonSystemPrompt,
 	});
 	// Errors are handled at adoption time; this avoids an unhandled rejection
 	promise.catch(() => {});
-	prefetch = { baseSessionId: lessonSessionId, promise };
+	prefetch = { baseSessionId: sessionId, promise };
 }
 
-function finishTurn(turn: TutorTurn): TurnResult {
-	lessonSessionId = turn.sessionId;
-	// File the card body into the notes document at adoption time — a
-	// discarded prefetch fork must never write notes
-	if (turn.card.notes) {
-		notes.insert(turn.card.notes.sectionPath, turn.card.body);
-	}
-	// Only step cards lead to "continue" — after a question card the next
-	// input is an answer, and a recap ends the lesson
-	if (turn.card.type === "step") {
-		startPrefetch();
+// What a card contributes to the notes document: its body, and under it the
+// takeaway as a pull quote when the card has one. Card references are flattened
+// on the way in — the notes are a tree of sections with no cards to link to.
+// The notes are what the learner re-reads, and a takeaway per concept is what
+// makes that document scannable rather than something to read end to end.
+function notesEntry(card: TutorTurn["card"]): string {
+	const body = stripCardRefs(card.body);
+	if (!card.takeaway) return body;
+	return `${body}\n\n> **Key takeaway** — ${stripCardRefs(card.takeaway)}`;
+}
+
+function finishTurn(lesson: ActiveLesson, turn: TutorTurn): TurnResult {
+	lesson.sessionId = turn.sessionId;
+	// A turn can land after the learner has already opened another lesson. Its
+	// session still belongs to its own lesson, but the notes document and the
+	// prefetch slot belong to whichever lesson is open now.
+	if (lesson === active) {
+		// File the card body into the notes document at adoption time — a
+		// discarded prefetch fork must never write notes. Card references are
+		// flattened to plain names on the way in: the notes document is a tree
+		// of sections with no cards to link to.
+		if (turn.card.notes) {
+			notes.insert(turn.card.notes.sectionPath, notesEntry(turn.card));
+		}
+		// Only step cards lead to "continue" — after a question card the next
+		// input is an answer, and a recap ends the lesson
+		if (turn.card.type === "step") {
+			startPrefetch(lesson);
+		}
 	}
 	return {
 		ok: true,
 		card: turn.card,
 		outline: turn.outline,
 		exercise: turn.exercise,
-		lessonId,
+		lessonId: lesson.id,
 	};
 }
 
@@ -98,32 +131,20 @@ function turnError(error: unknown): TurnResult {
 	};
 }
 
-async function tutorTurn(
+// Foreground turns stream a live preview to the webview; prefetch
+// (startPrefetch) stays non-streaming since it runs in the background. Fork
+// whenever we're resuming: the lesson session is advanced (finishTurn) only
+// once a card is successfully adopted, so a reply we can't use can't skip the
+// next step. The first turn of a lesson has no session to fork.
+async function runForegroundTurn(
+	lesson: ActiveLesson,
 	message: string,
-	options: { newLesson?: boolean; language?: string; topic?: string } = {},
 ): Promise<TurnResult> {
-	if (options.newLesson) {
-		const topic = options.topic ?? message;
-		lessonSessionId = undefined;
-		lessonLanguage = options.language;
-		lessonSystemPrompt = composeSystemPrompt(options.language);
-		lessonId = makeLessonId(topic);
-		notes.startLesson(lessonId, topic);
-	}
-	// An explicit user turn advances the base session; a pending fork would
-	// no longer contain this exchange, so drop it
-	prefetch = undefined;
 	try {
-		// Foreground turns stream a live preview to the webview; prefetch
-		// (startPrefetch) stays non-streaming since it runs in the background.
-		// Fork whenever we're resuming: as with prefetch, the lesson session is
-		// advanced (finishTurn) only once a card is successfully adopted, so a
-		// reply we can't use can't skip the next step. The first turn of a
-		// lesson has no session to fork.
 		return finishTurn(
-			await runTutorTurnStreaming(message, lessonSessionId, {
-				systemPrompt: lessonSystemPrompt,
-				fork: Boolean(lessonSessionId),
+			lesson,
+			await runTutorTurnStreaming(message, lesson.sessionId, lesson.runtime, {
+				fork: Boolean(lesson.sessionId),
 				onPreview: sendPreview,
 			}),
 		);
@@ -132,36 +153,60 @@ async function tutorTurn(
 	}
 }
 
+async function beginLesson(config: LessonConfig): Promise<TurnResult> {
+	const id = makeLessonId(config.topic);
+	const lesson: ActiveLesson = { id, config, runtime: runtimeFor(config) };
+	active = lesson;
+	notes.startLesson(id, config.topic);
+	prefetch = undefined;
+	// The opening message can involve reading the project from disk
+	return runForegroundTurn(lesson, await openingMessage(config));
+}
+
+function tutorTurn(message: string): Promise<TurnResult> {
+	if (!active) {
+		return Promise.resolve({ ok: false, error: "No lesson is open" });
+	}
+	// An explicit user turn advances the base session; a pending fork would
+	// no longer contain this exchange, so drop it
+	prefetch = undefined;
+	return runForegroundTurn(active, message);
+}
+
 async function continueTurn(): Promise<TurnResult> {
+	const lesson = active;
+	if (!lesson) return { ok: false, error: "No lesson is open" };
 	const pending = prefetch;
 	prefetch = undefined;
-	if (pending && pending.baseSessionId === lessonSessionId) {
+	if (pending && pending.baseSessionId === lesson.sessionId) {
 		try {
-			return finishTurn(await pending.promise);
+			return finishTurn(lesson, await pending.promise);
 		} catch (error) {
 			console.error("prefetched turn failed, running a fresh one:", error);
 		}
 	}
-	return tutorTurn("continue");
+	return runForegroundTurn(lesson, "continue");
 }
 
 const rpc = BrowserView.defineRPC<TutoRPC>({
-	maxRequestTime: 300_000,
+	// Long enough to cover the slowest mode's turn plus its repair attempts —
+	// a codebase turn can spend minutes reading before it writes a card
+	maxRequestTime: 900_000,
 	handlers: {
 		requests: {
-			startLesson: ({ topic, language }) =>
-				tutorTurn(`I want to learn about: ${topic}`, {
-					newLesson: true,
-					language,
-					topic,
-				}),
+			startLesson: ({ config }) => beginLesson(config),
 			sendMessage: ({ text }) => tutorTurn(text),
 			continueLesson: () => continueTurn(),
+			pickProject: () => pickProject(),
 			getNotes: () => ({ markdown: notes.render() }),
 			saveLesson: async ({ snapshot }) => {
+				// Metadata belongs to the open lesson. A save for any other one
+				// (a late write as the learner switches away) carries none, and
+				// the store keeps what is already on disk.
+				const lesson = active?.id === snapshot.id ? active : undefined;
 				await store.saveLesson(snapshot, {
-					sessionId: lessonSessionId,
-					language: lessonLanguage,
+					sessionId: lesson?.sessionId,
+					config: lesson?.config,
 				});
 				return { ok: true };
 			},
@@ -169,20 +214,37 @@ const rpc = BrowserView.defineRPC<TutoRPC>({
 			resumeLesson: async ({ id }) => {
 				const record = await store.loadLesson(id);
 				if (!record) return { ok: false, error: "Lesson not found" };
-				lessonId = record.id;
-				lessonSessionId = record.sessionId;
-				lessonLanguage = record.language;
-				lessonSystemPrompt = composeSystemPrompt(record.language);
+				const config = store.configOf(record);
+				// A lesson that teaches from a project can outlive the folder it
+				// points at. Catch that here rather than letting the first turn
+				// fail inside the CLI with a working-directory error.
+				if (config.mode === "codebase") {
+					const found = await describeProject(config.project.path);
+					if (!found.project) {
+						return {
+							ok: false,
+							error: `This lesson reads from ${config.project.path}, which is no longer there.`,
+						};
+					}
+				}
+				active = {
+					id: record.id,
+					config,
+					runtime: runtimeFor(config),
+					sessionId: record.sessionId,
+				};
 				// A prefetch fork from another lesson must not leak into this one
 				prefetch = undefined;
 				await notes.resume(record.id, record.topic);
-				return { ok: true, record };
+				// Hand back the resolved config, so the webview never has to
+				// work out what a pre-modes record meant
+				return { ok: true, record: { ...record, config } };
 			},
 			deleteLesson: async ({ id }) => {
 				await store.deleteLesson(id);
-				if (lessonId === id) {
-					lessonId = undefined;
-					lessonSessionId = undefined;
+				if (active?.id === id) {
+					active = undefined;
+					prefetch = undefined;
 				}
 				return { ok: true };
 			},
@@ -198,6 +260,39 @@ const rpc = BrowserView.defineRPC<TutoRPC>({
 							checkError instanceof Error
 								? checkError.message
 								: String(checkError),
+					};
+				}
+			},
+			regenerateExercise: async ({
+				exercise,
+				material,
+				concept,
+			}): Promise<ExerciseResult> => {
+				try {
+					return {
+						ok: true,
+						exercise: await regenerateExercise(exercise, material, concept),
+					};
+				} catch (regenError) {
+					console.error("exercise regeneration failed:", regenError);
+					return {
+						ok: false,
+						error:
+							regenError instanceof Error
+								? regenError.message
+								: String(regenError),
+					};
+				}
+			},
+			askAboutSection: async (input): Promise<AskResult> => {
+				try {
+					return { ok: true, answer: await discussSection(input) };
+				} catch (askError) {
+					console.error("section question failed:", askError);
+					return {
+						ok: false,
+						error:
+							askError instanceof Error ? askError.message : String(askError),
 					};
 				}
 			},

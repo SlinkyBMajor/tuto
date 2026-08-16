@@ -2,7 +2,7 @@
 
 Tuto is a personal desktop app with no user accounts, login, or network API of its own. Its trust boundary is elsewhere:
 
-- **Subprocess execution.** `src/bun/claude.ts` spawns the local `claude` CLI (`Bun.spawn`) for every turn and side-call. The app relies on the user's existing Claude Code install and auth; it passes no credentials itself. Tool use is disabled on tutor turns (`--tools ""`), and side-calls add `--safe-mode` (no CLAUDE.md/skills/hooks/MCP).
+- **Subprocess execution.** `src/bun/claude.ts` spawns the local `claude` CLI (`Bun.spawn`) for every turn and side-call. The app relies on the user's existing Claude Code install and auth; it passes no credentials itself. Every spawn — turns, repairs, and side-calls — carries `--safe-mode` and `--strict-mcp-config` (`HERMETIC_ARGS`), so none of the machine's CLAUDE.md, skills, plugins, hooks, or MCP servers reach it. Tools are off entirely except in codebase mode, which gets `Read`, `Grep`, `Glob`.
 - **Local filesystem.** `src/bun/store.ts` and `notes.ts` read and write under the OS app-data dir (`~/Library/Application Support/tuto/lessons/<id>/`). Paths are built in `paths.ts` from a date + slugified topic + random suffix.
 - **Rendering model-generated markup.** Card and notes bodies are model output. Code is rendered by Shiki and Mermaid diagrams by mermaid.js, both injected via `dangerouslySetInnerHTML` (`src/mainview/components/card-markdown.tsx`). Mermaid source is validated with `mermaid.parse` before render.
 

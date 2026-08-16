@@ -2,17 +2,24 @@ import {
 	ArrowRight01Icon,
 	Award01Icon,
 	CompassIcon,
+	Flag01Icon,
+	Idea01Icon,
+	MessageQuestionIcon,
 	Plant01Icon,
 	RefreshIcon,
 	RocketIcon,
 	SentIcon,
 	SidebarLeft01Icon,
+	Stairs01Icon,
+	StickyNote01Icon,
 	Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
 	type MouseEvent as ReactMouseEvent,
+	useCallback,
 	useEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -22,10 +29,30 @@ import { AppRail } from "@/components/app-rail";
 import { CardMarkdown } from "@/components/card-markdown";
 import { ExplainSelection } from "@/components/explain";
 import { LessonLibrary } from "@/components/home";
+import {
+	LessonPlanning,
+	type PlanningStage,
+	PlanningWash,
+} from "@/components/lesson-planning";
 import { LessonSidebar } from "@/components/lesson-sidebar";
+import { MarginLayer } from "@/components/margin-layer";
 import { NotesPanel } from "@/components/notes";
 import { type PracticeItem, PracticePanel } from "@/components/practice";
+import { ProjectField } from "@/components/project-picker";
+import {
+	newThreadId,
+	questionCount,
+	type Thread,
+	ThreadCard,
+} from "@/components/question-threads";
 import { loadSettings } from "@/components/settings";
+import {
+	asStickyColor,
+	newStickyId,
+	randomStickyColor,
+	type Sticky,
+	StickyCard,
+} from "@/components/sticky-notes";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,22 +65,32 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+	DEMO_ACTIVITY,
 	DEMO_CARDS,
 	DEMO_EXERCISES,
 	DEMO_LESSONS,
 	DEMO_NOTES,
 	DEMO_OUTLINE,
+	DEMO_PROJECT,
+	DEMO_THREADS,
 	DEMO_TOPIC,
 } from "@/lib/demo";
 import { bun, onStreamCard } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
+import { cardRefSlug, stripCardRefs } from "../shared/card-refs";
 import type {
 	Card,
 	CardOption,
+	LessonConfig,
+	LessonGoal,
 	LessonSnapshot,
 	OutlineItem,
+	Prerequisite,
+	ProjectRef,
 	SavedFeedItem,
 	SavedPracticeItem,
+	SavedSticky,
+	SavedThread,
 	TurnResult,
 } from "../shared/types";
 
@@ -61,6 +98,31 @@ const params = new URLSearchParams(window.location.search);
 const demoMode = params.has("demo");
 // ?demohome renders the home screen with fixture lessons for UI verification
 const homeDemoMode = params.has("demohome");
+// ?demoproject pretends a project was picked, so the project chip and the
+// sidebar's project line can be seen without a real folder (and without the
+// OS dialog, which only exists inside the app shell)
+const demoProject = params.has("demoproject") ? DEMO_PROJECT : null;
+// ?demoplanning[=level] holds the planning screen open. Add &demoproject for
+// the codebase version, which is the one with lookups to show.
+const demoPlanning: PlanningStage | null = params.has("demoplanning")
+	? params.get("demoplanning") === "level"
+		? "level"
+		: "outline"
+	: null;
+// What a demo lesson is about: the fixture topic, or a question worth asking of
+// the fixture project when one is pretended in
+const demoTopic = demoProject
+	? "how identity and org-scoped tokens work"
+	: DEMO_TOPIC;
+// ?demogoal pretends this lesson was taken as groundwork, so the sidebar's
+// destination line and the recap's way back can be seen without walking the
+// whole prerequisite path
+const demoGoal: LessonGoal | undefined = params.has("demogoal")
+	? { topic: "Event-driven architecture" }
+	: undefined;
+const demoLessonConfig: LessonConfig = demoProject
+	? { mode: "codebase", topic: demoTopic, project: demoProject }
+	: { mode: "topic", topic: demoTopic, goal: demoGoal };
 
 const OPTION_ICONS: Record<string, IconSvgElement> = {
 	beginner: Plant01Icon,
@@ -75,6 +137,8 @@ const COLUMN = "mx-auto w-full max-w-[52rem] px-8";
 interface TurnOptions {
 	highlightNew?: boolean;
 	pinTop?: boolean;
+	// This card answers a follow-up question rather than continuing the outline
+	followUp?: boolean;
 }
 
 interface FeedItem {
@@ -83,6 +147,8 @@ interface FeedItem {
 	card?: Card;
 	text?: string;
 	selectedOption?: string;
+	// Set on the card that answered a follow-up, so it labels itself as one
+	followUp?: boolean;
 	// Error items only: replay the turn that produced this panel. Takes the
 	// item's own id so the panel can clear itself before the card lands.
 	retry?: (itemId: number) => void;
@@ -90,11 +156,36 @@ interface FeedItem {
 
 let nextId = 0;
 
+// While a lesson is being set up the planning panel IS the view, so put its top
+// under the header rather than scrolling past it to the newest card. Reported
+// so both scroll effects can defer to it — they would otherwise fight over the
+// pane and the loser's position is the one that sticks.
+function scrollToPlanning(): boolean {
+	const planning = document.querySelector("[data-planning]");
+	if (!planning) return false;
+	planning.scrollIntoView({ behavior: "auto", block: "start" });
+	return true;
+}
+
 // Reading sections are read from the DOM rather than tracked in React state, so
 // markdown internals stay presentation-only — see the highlight effect.
 function segmentsOf(itemId: number): Element[] {
 	const card = document.querySelector(`[data-item-id="${itemId}"]`);
 	return card ? Array.from(card.querySelectorAll("[data-segment]")) : [];
+}
+
+// The words of one section, for a question asked about it. Read out of the DOM
+// like the sections themselves, so a code block or a diagram's rendered labels
+// arrive as the learner sees them rather than as markdown source.
+function sectionTextOf(itemId: number, index: number): string {
+	const segment = segmentsOf(itemId)[index];
+	// A section can carry chrome that is not part of the passage: a code block's
+	// language label and Copy button, the takeaway's "Key takeaway". Those mark
+	// where their words actually start, so prefer that when it is there —
+	// otherwise a question about a snippet arrives asking about "JavaScriptCopy".
+	const source = segment?.querySelector("[data-section-text]") ?? segment;
+	const text = source?.textContent ?? "";
+	return text.replace(/\s+/g, " ").trim().slice(0, 1200);
 }
 
 export default function App() {
@@ -108,7 +199,9 @@ export default function App() {
 			: [],
 	);
 	const [loading, setLoading] = useState(false);
-	const [started, setStarted] = useState(demoMode || params.has("demostream"));
+	const [started, setStarted] = useState(
+		demoMode || params.has("demostream") || demoPlanning !== null,
+	);
 	const [input, setInput] = useState("");
 	const [outline, setOutline] = useState<OutlineItem[] | null>(
 		demoMode ? DEMO_OUTLINE : null,
@@ -129,7 +222,15 @@ export default function App() {
 	// Persistence: the saved-lesson id (from the first turn or a resume) and
 	// the lesson topic, used to build the save snapshot.
 	const [lessonId, setLessonId] = useState<string | null>(null);
-	const [topic, setTopic] = useState(demoMode ? DEMO_TOPIC : "");
+	const [topic, setTopic] = useState(demoMode || demoPlanning ? demoTopic : "");
+	// How the open lesson was started. The bun process owns the authoritative
+	// copy; this one lets the UI label the lesson and carry the project over
+	// when a recap suggestion starts the next one.
+	const [lessonConfig, setLessonConfig] = useState<LessonConfig | null>(
+		demoMode || demoPlanning ? demoLessonConfig : null,
+	);
+	// The project chosen on the home screen, before a lesson exists
+	const [project, setProject] = useState<ProjectRef | null>(demoProject);
 	// Bumped when returning home so the lesson library re-fetches
 	const [homeRefresh, setHomeRefresh] = useState(0);
 	// The lesson panel can be folded away to widen the reading column
@@ -140,10 +241,16 @@ export default function App() {
 		id: string;
 		nonce: number;
 	} | null>(null);
+	// The same, for a card referring back to an earlier card by name
+	const [cardJump, setCardJump] = useState<{
+		slug: string;
+		nonce: number;
+	} | null>(null);
 	// Live preview of the card currently being generated (streaming)
 	const [streaming, setStreaming] = useState<{
 		title: string;
 		body: string;
+		activity?: string;
 	} | null>(
 		params.has("demostream")
 			? {
@@ -152,6 +259,9 @@ export default function App() {
 				}
 			: null,
 	);
+	// Every lookup this turn has made, oldest first. The planning screen shows
+	// the tail of it; a mid-lesson turn only ever shows the latest line.
+	const [activityTrail, setActivityTrail] = useState<string[]>([]);
 	// True only while a foreground turn is in flight, so late stream
 	// messages can't resurrect a preview after the real card lands
 	const turnActiveRef = useRef(false);
@@ -160,10 +270,46 @@ export default function App() {
 		itemId: number;
 		index: number;
 	} | null>(null);
+	// Notes pinned beside sections, and the one just created that wants focus
+	const [stickies, setStickies] = useState<Sticky[]>([]);
+	const [focusSticky, setFocusSticky] = useState<string | null>(null);
+	// Conversations hanging off sections, and the one currently open as a chat.
+	// At most one section's thread is open — the margin is not a second feed.
+	// The open one carries the section's words so its header can name the
+	// passage without re-reading the DOM on every render.
+	const [threads, setThreads] = useState<Thread[]>(() =>
+		demoMode
+			? DEMO_THREADS.map((thread) => ({
+					id: thread.id,
+					// The demo feed is built in this same render, from id 0 upwards and
+					// with nothing but cards in it, so a fixture's card index and the
+					// item id it lands on are the same number.
+					itemId: thread.cardIndex,
+					segmentIndex: thread.segmentIndex,
+					messages: thread.messages,
+				}))
+			: [],
+	);
+	const [openThread, setOpenThread] = useState<{
+		id: string;
+		section: string;
+	} | null>(null);
+	// After the recap, the composer for a follow-up question — the only place in
+	// a lesson that still takes free text into the lesson itself
+	const [followUpOpen, setFollowUpOpen] = useState(false);
+	// The section under the pointer, carrying where to draw its add button
+	const [hoverSection, setHoverSection] = useState<{
+		itemId: number;
+		index: number;
+		top: number;
+	} | null>(null);
 	// Bumped each time reading mode is entered from nothing, to flash the
 	// arrow-key hint
 	const [hintNonce, setHintNonce] = useState(0);
 	const bottomRef = useRef<HTMLDivElement>(null);
+	// The feed list itself. Sticky notes are positioned against the sections
+	// inside it, so its height changing means they all have to be re-placed.
+	const feedListRef = useRef<HTMLDivElement>(null);
 	// The content pane scrolls, not the window — every scroll position in
 	// this file is relative to this element.
 	const feedRef = useRef<HTMLDivElement>(null);
@@ -192,6 +338,7 @@ export default function App() {
 			return;
 		}
 		if (keyboardFlowRef.current) return;
+		if (scrollToPlanning()) return;
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [items, loading, streaming]);
 
@@ -202,6 +349,7 @@ export default function App() {
 	useEffect(() => {
 		const pane = feedRef.current;
 		if (!pane) return;
+		if (tab === "lesson" && scrollToPlanning()) return;
 		pane.scrollTo({
 			top: tab === "lesson" ? pane.scrollHeight : 0,
 			behavior: "auto",
@@ -216,16 +364,91 @@ export default function App() {
 			?.scrollIntoView({ behavior: "smooth", block: "start" });
 	}, [conceptJump]);
 
+	// Following a card reference. The learner is reading further down the feed,
+	// so the referenced card is above them: put its top under the header rather
+	// than centring it, matching what selecting a concept does.
+	useEffect(() => {
+		if (!cardJump) return;
+		document
+			.querySelector(`[data-card-ref="${cardJump.slug}"]`)
+			?.scrollIntoView({ behavior: "smooth", block: "start" });
+	}, [cardJump]);
+
+	// Every card a reference can address, keyed by its slugged title.
+	const cardAnchors = useMemo(
+		() =>
+			new Set(
+				items
+					.filter((item) => item.kind === "card" && item.card?.title)
+					.map((item) => cardRefSlug(item.card?.title ?? "")),
+			),
+		[items],
+	);
+	// Read through a ref so the resolver below can be identity-stable while
+	// still seeing the current feed. It cannot simply close over cardAnchors:
+	// that set changes with every card, the new identity would rebuild
+	// CardMarkdown's component map, and remounting the markdown tree resets
+	// every diagram to its loading skeleton (see card-markdown.tsx). Writing a
+	// derived value during render is safe — the same input always writes the
+	// same set, so StrictMode's second pass is a no-op.
+	const cardAnchorsRef = useRef(cardAnchors);
+	cardAnchorsRef.current = cardAnchors;
+
+	const resolveCardRef = useCallback(
+		(slug: string) => cardAnchorsRef.current.has(slug),
+		[],
+	);
+
+	// A reference only ever points backwards, so the target is already mounted
+	// and the jump needs no tab switch — unlike selecting a concept.
+	const goToCard = useCallback((slug: string) => {
+		setCardJump((prev) => ({ slug, nonce: (prev?.nonce ?? 0) + 1 }));
+	}, []);
+
 	// Auto-save the lesson snapshot whenever persistable state changes. The
 	// bun process merges session id, language, and timestamps; errors and the
 	// in-flight "checking" status are not persisted.
 	useEffect(() => {
 		if (demoMode || !started || !lessonId) return;
+		// Notes travel by position, so they are written against the same list of
+		// cards the feed below is: an id handed out this session means nothing on
+		// disk. A note nobody has typed in yet is not worth saving.
+		const cardIds = items
+			.filter((item) => item.kind === "card")
+			.map((item) => item.id);
 		const snapshot: LessonSnapshot = {
 			id: lessonId,
 			topic,
 			outline,
 			currentConceptId,
+			stickies: stickies.flatMap((sticky): SavedSticky[] => {
+				const cardIndex = cardIds.indexOf(sticky.itemId);
+				if (cardIndex < 0 || !sticky.text.trim()) return [];
+				return [
+					{
+						id: sticky.id,
+						cardIndex,
+						segmentIndex: sticky.segmentIndex,
+						text: sticky.text,
+						color: sticky.color,
+					},
+				];
+			}),
+			// Same positional anchor as a note, and the same rule: a thread nobody
+			// asked anything in is a slip, not a conversation. In-flight and failed
+			// state is not persisted — only what was actually said.
+			threads: threads.flatMap((thread): SavedThread[] => {
+				const cardIndex = cardIds.indexOf(thread.itemId);
+				if (cardIndex < 0 || thread.messages.length === 0) return [];
+				return [
+					{
+						id: thread.id,
+						cardIndex,
+						segmentIndex: thread.segmentIndex,
+						messages: thread.messages,
+					},
+				];
+			}),
 			feed: items
 				.filter((item) => item.kind !== "error")
 				.map(
@@ -234,26 +457,48 @@ export default function App() {
 						card: item.card,
 						text: item.text,
 						selectedOption: item.selectedOption,
+						followUp: item.followUp,
 					}),
 				),
 			practice: practice.map(
 				(item): SavedPracticeItem => ({
 					exercise: item.exercise,
-					status: item.status === "checking" ? "open" : item.status,
+					// Checking and regenerating are in-flight, not verdicts
+					status:
+						item.status === "correct" || item.status === "wrong"
+							? item.status
+							: "open",
 					userAnswer: item.userAnswer,
 					explanation: item.explanation,
 				}),
 			),
 		};
 		void bun.saveLesson({ snapshot }).catch(() => {});
-	}, [lessonId, started, topic, outline, currentConceptId, items, practice]);
+	}, [
+		lessonId,
+		started,
+		topic,
+		outline,
+		currentConceptId,
+		items,
+		practice,
+		stickies,
+		threads,
+	]);
 
 	// Receive streaming card previews from the bun process. Ignore any that
 	// arrive outside a live turn so a stale delta can't reappear after the
 	// finished card has been appended.
 	useEffect(() => {
 		onStreamCard((preview) => {
-			if (turnActiveRef.current) setStreaming(preview);
+			if (!turnActiveRef.current) return;
+			setStreaming(preview);
+			const line = preview.activity;
+			if (!line) return;
+			// The same lookup is pushed with every text delta that follows it
+			setActivityTrail((prev) =>
+				prev.at(-1) === line ? prev : [...prev, line],
+			);
 		});
 		return () => onStreamCard(null);
 	}, []);
@@ -299,6 +544,7 @@ export default function App() {
 		turnActiveRef.current = true;
 		keyboardFlowRef.current = false;
 		setStreaming(null);
+		setActivityTrail([]);
 		try {
 			const result = await send();
 			if (result.ok) {
@@ -312,7 +558,10 @@ export default function App() {
 						{ id: nextId++, exercise, status: "open" },
 					]);
 				}
-				append({ kind: "card", card: result.card }, options);
+				append(
+					{ kind: "card", card: result.card, followUp: options.followUp },
+					options,
+				);
 			} else {
 				append({
 					kind: "error",
@@ -348,27 +597,68 @@ export default function App() {
 		void runTurn(send, options);
 	}
 
-	function startLesson(topicArg?: string) {
+	// `from` is the project the lesson reads: the home-screen pick for a fresh
+	// lesson (which is what leaving it out means), and the current lesson's
+	// project when a recap suggestion starts the next one — following a
+	// suggestion should not silently leave the code. `goal` marks the new lesson
+	// as groundwork for a subject the learner is coming back to.
+	function startLesson(
+		topicArg?: string,
+		options: { from?: ProjectRef | null; goal?: LessonGoal } = {},
+	) {
 		const nextTopic = (topicArg ?? input).trim();
 		if (!nextTopic || loading) return;
+		const chosen = options.from === undefined ? project : options.from;
+		const language = loadSettings().codeLanguage.trim() || undefined;
+		// Groundwork is general knowledge by definition, so a lesson with a goal
+		// never reads a project. The lesson it leads back to may well — that
+		// project travels in the goal, not here.
+		const config: LessonConfig = options.goal
+			? { mode: "topic", topic: nextTopic, language, goal: options.goal }
+			: chosen
+				? { mode: "codebase", topic: nextTopic, language, project: chosen }
+				: { mode: "topic", topic: nextTopic, language };
 		// Fully reset so a new lesson never inherits the previous one's state
 		setItems([]);
 		setPractice([]);
+		setStickies([]);
+		setThreads([]);
+		setOpenThread(null);
+		setFollowUpOpen(false);
 		setOutline(null);
 		setCurrentConceptId(null);
 		setHighlight(null);
 		setLessonId(null);
 		setTopic(nextTopic);
+		setLessonConfig(config);
 		setInput("");
 		setTab("lesson");
 		setStarted(true);
 		append({ kind: "user", text: nextTopic });
-		void runTurn(() =>
-			bun.startLesson({
-				topic: nextTopic,
-				language: loadSettings().codeLanguage.trim() || undefined,
-			}),
-		);
+		void runTurn(() => bun.startLesson({ config }));
+	}
+
+	// Take the groundwork first. The lesson being left has exactly one card in
+	// it — the unanswered level question this offer sits under — so it is
+	// deleted rather than left in the library as a stub nobody will open again:
+	// the way back is the goal carried by the lesson that replaces it, which
+	// starts a fresh lesson on the subject rather than resuming this one.
+	async function startPrerequisite(prerequisite: Prerequisite) {
+		if (loading) return;
+		const goal: LessonGoal = {
+			topic,
+			project:
+				lessonConfig?.mode === "codebase" ? lessonConfig.project : undefined,
+		};
+		if (lessonId) await bun.deleteLesson({ id: lessonId }).catch(() => {});
+		startLesson(prerequisite.topic, { from: null, goal });
+	}
+
+	// Back to what the learner came for, once the groundwork is done. A fresh
+	// lesson, on the project the goal remembers — a codebase question answered
+	// with a detour through general knowledge has to land back in the code.
+	function startGoal(goal: LessonGoal) {
+		startLesson(goal.topic, { from: goal.project ?? null });
 	}
 
 	async function resumeLesson(id: string) {
@@ -376,12 +666,53 @@ export default function App() {
 		const result = await bun.resumeLesson({ id }).catch(() => null);
 		if (!result?.ok) return;
 		const record = result.record;
-		setItems(record.feed.map((item) => ({ ...item, id: nextId++ })));
+		const feed = record.feed.map((item) => ({ ...item, id: nextId++ }));
+		setItems(feed);
 		setPractice(record.practice.map((item) => ({ ...item, id: nextId++ })));
+		// Notes are saved against the card's position in the feed; give them
+		// back the runtime id that card just received. One pointing past the end
+		// of the feed has no section left to sit beside, so it is dropped.
+		const cardIds = feed
+			.filter((item) => item.kind === "card")
+			.map((item) => item.id);
+		setStickies(
+			(record.stickies ?? []).flatMap((sticky): Sticky[] => {
+				const itemId = cardIds[sticky.cardIndex];
+				if (itemId === undefined) return [];
+				return [
+					{
+						id: sticky.id,
+						itemId,
+						segmentIndex: sticky.segmentIndex,
+						text: sticky.text,
+						color: asStickyColor(sticky.color),
+					},
+				];
+			}),
+		);
+		setThreads(
+			(record.threads ?? []).flatMap((thread): Thread[] => {
+				const itemId = cardIds[thread.cardIndex];
+				if (itemId === undefined) return [];
+				return [
+					{
+						id: thread.id,
+						itemId,
+						segmentIndex: thread.segmentIndex,
+						messages: thread.messages,
+					},
+				];
+			}),
+		);
+		setOpenThread(null);
+		setFollowUpOpen(false);
 		setOutline(record.outline);
 		setCurrentConceptId(record.currentConceptId);
 		setLessonId(record.id);
 		setTopic(record.topic);
+		// Resolved by the bun process before it replies, including for lessons
+		// saved before modes existed
+		setLessonConfig(record.config ?? null);
 		setHighlight(null);
 		setInput("");
 		setTab("lesson");
@@ -393,12 +724,17 @@ export default function App() {
 		setHomeRefresh((n) => n + 1);
 	}
 
-	function sendMessage() {
+	// The one place free text still reaches the lesson itself: a follow-up after
+	// the recap. Its answer lands in the feed as an ordinary card, marked as a
+	// follow-up so a lesson re-read later still shows which cards came from the
+	// outline and which came from a question.
+	function askFollowUp() {
 		const text = input.trim();
 		if (!text || loading) return;
 		setInput("");
+		setFollowUpOpen(false);
 		append({ kind: "user", text });
-		void runTurn(() => bun.sendMessage({ text }));
+		void runTurn(() => bun.sendMessage({ text }), { followUp: true });
 	}
 
 	function continueLesson(options: { highlightNew?: boolean } = {}) {
@@ -448,6 +784,212 @@ export default function App() {
 		if (index >= 0) moveHighlight(itemId, index, { scroll: false });
 	}
 
+	// Point at a section and its add-a-note button appears level with it. The
+	// pointer then has to leave the text to reach that button, so anything that
+	// is not a section leaves the last one standing; only leaving the card
+	// clears it. The state also changes only when the section does, so running
+	// the pointer along a paragraph doesn't re-render the feed.
+	//
+	// The offset is measured rather than read off offsetTop: segments are
+	// positioned, so a paragraph nested in a list would measure from the list.
+	function trackSection(
+		itemId: number,
+		event: ReactMouseEvent<HTMLDivElement>,
+	) {
+		const segment = (event.target as HTMLElement).closest<HTMLElement>(
+			"[data-segment]",
+		);
+		if (!segment) return;
+		const index = segmentsOf(itemId).indexOf(segment);
+		if (index < 0) return;
+		const top =
+			segment.getBoundingClientRect().top -
+			event.currentTarget.getBoundingClientRect().top;
+		setHoverSection((prev) =>
+			prev?.itemId === itemId && prev.index === index
+				? prev
+				: { itemId, index, top },
+		);
+	}
+
+	// A note is pinned to one section, in the same coordinates the reading
+	// position uses: the card it sits in, and the section's index within it.
+	function addSticky(itemId: number, segmentIndex: number) {
+		const sticky: Sticky = {
+			id: newStickyId(),
+			itemId,
+			segmentIndex,
+			text: "",
+			color: randomStickyColor(),
+		};
+		setStickies((prev) => [...prev, sticky]);
+		setFocusSticky(sticky.id);
+	}
+
+	// Ask about a section. One thread per section, always: a second conversation
+	// beside the same paragraph would sit on top of the first, and "what I asked
+	// about this passage" is one thread of thought however many questions it
+	// took. So this opens the section's thread when it already has one.
+	function openQuestion(itemId: number, segmentIndex: number) {
+		const section = sectionTextOf(itemId, segmentIndex);
+		const existing = threads.find(
+			(thread) =>
+				thread.itemId === itemId && thread.segmentIndex === segmentIndex,
+		);
+		if (existing) {
+			setOpenThread({ id: existing.id, section });
+			return;
+		}
+		const thread: Thread = {
+			id: newThreadId(),
+			itemId,
+			segmentIndex,
+			messages: [],
+		};
+		setThreads((prev) => [...prev, thread]);
+		setOpenThread({ id: thread.id, section });
+	}
+
+	// Send a question and hang the answer under it. The bun process is stateless
+	// here, so everything the answer is built from goes out with the question:
+	// the lesson read so far, the card, the section, and what this thread has
+	// already said.
+	async function askInThread(threadId: string, question: string) {
+		const thread = threads.find((item) => item.id === threadId);
+		if (!thread) return;
+		const history = thread.messages;
+		const card = items.find((item) => item.id === thread.itemId)?.card;
+		const section = sectionTextOf(thread.itemId, thread.segmentIndex);
+		setThreads((prev) =>
+			prev.map((item) =>
+				item.id === threadId
+					? {
+							...item,
+							messages: [...item.messages, { role: "user", text: question }],
+							pending: true,
+							error: undefined,
+						}
+					: item,
+			),
+		);
+		const result = await bun
+			.askAboutSection({
+				topic,
+				cardTitle: card?.title ?? "",
+				section,
+				material: lessonMaterial(),
+				history,
+				question,
+			})
+			.catch((error: unknown) => ({
+				ok: false as const,
+				error: error instanceof Error ? error.message : String(error),
+			}));
+		setThreads((prev) =>
+			prev.map((item) => {
+				if (item.id !== threadId) return item;
+				if (!result.ok) return { ...item, pending: false, error: result.error };
+				return {
+					...item,
+					pending: false,
+					error: undefined,
+					messages: [
+						...item.messages,
+						{ role: "tutor" as const, text: result.answer },
+					],
+				};
+			}),
+		);
+	}
+
+	// Leaving a thread. One nobody asked anything in is a slip — the same rule
+	// an empty note follows — so it goes rather than sitting in the margin as an
+	// empty card. The reading position goes back to the section it belongs to.
+	function closeThread(thread: Thread) {
+		setOpenThread(null);
+		if (thread.messages.length === 0) {
+			setThreads((prev) => prev.filter((item) => item.id !== thread.id));
+		}
+		moveHighlight(thread.itemId, thread.segmentIndex, { scroll: false });
+	}
+
+	function removeThread(id: string) {
+		setThreads((prev) => prev.filter((item) => item.id !== id));
+		setOpenThread(null);
+	}
+
+	// Both are stable: a note debounces its text against them, and a callback
+	// that changed identity on every feed render would keep restarting that.
+	const updateSticky = useCallback((id: string, text: string) => {
+		setStickies((prev) =>
+			prev.map((sticky) => (sticky.id === id ? { ...sticky, text } : sticky)),
+		);
+	}, []);
+
+	const removeSticky = useCallback((id: string) => {
+		setStickies((prev) => prev.filter((sticky) => sticky.id !== id));
+	}, []);
+
+	const clearStickyFocus = useCallback(() => setFocusSticky(null), []);
+
+	// Done writing: hand the reading position back to the section the note
+	// belongs to, so the arrow keys carry on from where they left off. No
+	// scroll — the note is beside the section, so both are already on screen.
+	function finishSticky(sticky: Sticky) {
+		moveHighlight(sticky.itemId, sticky.segmentIndex, { scroll: false });
+	}
+
+	// Notes and threads hang in the same margin, sorted together by where each
+	// wants to sit — see MarginLayer for why they don't get a column each.
+	const marginItems = useMemo(
+		() => [
+			...stickies.map((sticky) => ({ kind: "note" as const, ...sticky })),
+			...threads.map((thread) => ({ kind: "thread" as const, ...thread })),
+		],
+		[stickies, threads],
+	);
+
+	// Mark the sections that have a conversation hanging off them, and with how
+	// many questions, so the count is visible while reading even when a busy
+	// margin has pushed the thread card away from its own paragraph. Written
+	// straight to the DOM for the same reason the reading highlight is: sections
+	// are markdown internals, and threading a count through them would rebuild
+	// the markdown tree on every answer.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: items is an intentional trigger — a resumed lesson mounts its cards and its threads in the same commit, and the marker has to be re-applied once the sections exist
+	useEffect(() => {
+		for (const el of document.querySelectorAll("[data-questions]")) {
+			el.removeAttribute("data-questions");
+		}
+		for (const thread of threads) {
+			const asked = questionCount(thread);
+			if (asked === 0) continue;
+			segmentsOf(thread.itemId)[thread.segmentIndex]?.setAttribute(
+				"data-questions",
+				String(asked),
+			);
+		}
+	}, [threads, items]);
+
+	// An open thread grows downwards from the section it hangs off, so the end
+	// of the conversation — and the box for adding to it — can fall past the
+	// bottom of the pane. Scroll by exactly as much as that takes, and only when
+	// it takes any: a thread that already fits must not move the lesson under
+	// the learner just because they opened it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: threads is an intentional trigger — each answer makes the open thread taller, and the room it needs has to be found again
+	useEffect(() => {
+		if (!openThread) return;
+		const pane = feedRef.current;
+		const thread = document.querySelector("[data-thread][data-open]");
+		if (!pane || !thread) return;
+		const overflow =
+			thread.getBoundingClientRect().bottom -
+			pane.getBoundingClientRect().bottom +
+			16;
+		if (overflow > 0) {
+			pane.scrollTo({ top: pane.scrollTop + overflow, behavior: "smooth" });
+		}
+	}, [openThread, threads]);
+
 	// Apply the highlight class to the active segment in the DOM. Segments are
 	// queried rather than tracked in React state so markdown internals stay
 	// presentation-only.
@@ -476,18 +1018,34 @@ export default function App() {
 	useEffect(() => {
 		function onKeyDown(event: KeyboardEvent) {
 			if (tab !== "lesson") return;
+			const target = event.target as HTMLElement | null;
+			// A note being written, or a thread being talked in, owns every key
+			// that reaches it — Escape included. A thread is where you stop
+			// reading, so the reading keys must not reach inside one.
+			if (target?.closest("[data-sticky], [data-thread]")) return;
 			if (event.key === "Escape") {
 				setHighlight(null);
 				return;
 			}
-			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-			const target = event.target as HTMLElement | null;
-			if (
-				target?.closest("textarea, select, [contenteditable=true]") ||
-				(target instanceof HTMLInputElement && target.value !== "")
-			) {
+			const typing =
+				!!target?.closest("textarea, select, [contenteditable=true]") ||
+				(target instanceof HTMLInputElement && target.value !== "");
+			// The two things you can hang off the section you are reading, one key
+			// each: ArrowRight opens a question about it, ArrowLeft pins a quiet
+			// note. Both are the keyboard twins of the buttons that appear in the
+			// card's right padding when a section is pointed at.
+			if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+				if (typing || !highlight) return;
+				event.preventDefault();
+				if (event.key === "ArrowRight") {
+					openQuestion(highlight.itemId, highlight.index);
+				} else {
+					addSticky(highlight.itemId, highlight.index);
+				}
 				return;
 			}
+			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+			if (typing) return;
 			const cards = items.filter((item) => item.kind === "card");
 			if (cards.length === 0) return;
 			event.preventDefault();
@@ -582,31 +1140,40 @@ export default function App() {
 							}}
 						/>
 						<p className="text-lg text-muted-foreground">
-							What would you like to learn?
+							{project
+								? `What do you want to understand about ${project.name}?`
+								: "What would you like to learn?"}
 						</p>
 					</div>
-					<form
-						className="relative w-full max-w-xl"
-						onSubmit={(event) => {
-							event.preventDefault();
-							startLesson();
-						}}
-					>
-						<Input
-							autoFocus
-							value={input}
-							onChange={(event) => setInput(event.target.value)}
-							placeholder="e.g. Kubernetes, from the basics"
-							className="h-15 rounded-3xl border-border bg-card pr-28 pl-5 text-lg shadow-md"
-						/>
-						<Button
-							type="submit"
-							className="absolute top-2 right-2 h-11 rounded-2xl px-6"
-							disabled={!input.trim()}
+					<div className="relative flex w-full max-w-xl flex-col gap-3.5">
+						<form
+							className="relative w-full"
+							onSubmit={(event) => {
+								event.preventDefault();
+								startLesson();
+							}}
 						>
-							Start
-						</Button>
-					</form>
+							<Input
+								autoFocus
+								value={input}
+								onChange={(event) => setInput(event.target.value)}
+								placeholder={
+									project
+										? "e.g. how identity and org-scoped tokens work"
+										: "e.g. Kubernetes, from the basics"
+								}
+								className="h-15 rounded-3xl border-border bg-card pr-28 pl-5 text-lg shadow-md"
+							/>
+							<Button
+								type="submit"
+								className="absolute top-2 right-2 h-11 rounded-2xl px-6"
+								disabled={!input.trim()}
+							>
+								Start
+							</Button>
+						</form>
+						<ProjectField project={project} onChange={setProject} />
+					</div>
 					<LessonLibrary
 						onResume={resumeLesson}
 						refreshKey={homeRefresh}
@@ -620,8 +1187,32 @@ export default function App() {
 	const currentIndex = outline
 		? outline.findIndex((item) => item.id === currentConceptId)
 		: -1;
-	const lessonEnded =
-		items.findLast((item) => item.kind === "card")?.card?.type === "recap";
+	// The recap has been reached — not "the last card is the recap". Follow-up
+	// answers land after it as ordinary cards, and the lesson does not become
+	// unfinished again because one of them did.
+	const lessonEnded = items.some((item) => item.card?.type === "recap");
+	// The subject this lesson is groundwork for, when it is one. Read off the
+	// config rather than remembered by the tutor, so it survives a resume and
+	// says the same thing on the recap card as it does in the sidebar.
+	const goal = lessonConfig?.mode === "topic" ? lessonConfig.goal : undefined;
+
+	// Setting a lesson up is the longest wait in the app, and until the outline
+	// exists there is nothing on screen to show for it — so it gets a screen of
+	// its own rather than the skeleton card a mid-lesson turn gets. Which half
+	// of the setup we are in is readable from the feed: a question card in it
+	// means the level has been asked and the outline is what's coming.
+	//
+	// It gives way the moment the card starts arriving. Watching a card write
+	// itself is better than any placeholder, including this one.
+	const planningStage: PlanningStage | null =
+		demoPlanning ??
+		(loading && !outline && !streaming?.title && !streaming?.body
+			? items.some((item) => item.card?.type === "question")
+				? "outline"
+				: "level"
+			: null);
+	// Only a lesson with tools has lookups to show
+	const showDemoLookups = Boolean(demoPlanning && demoProject);
 
 	function updatePractice(id: number, patch: Partial<PracticeItem>) {
 		setPractice((prev) =>
@@ -636,6 +1227,32 @@ export default function App() {
 	function conceptTitle(conceptId?: string) {
 		if (!conceptId) return undefined;
 		return outline?.find((item) => item.id === conceptId)?.title;
+	}
+
+	// The lesson text a replacement exercise has to be answerable from: the
+	// cards that taught the concept, falling back to the whole lesson when the
+	// exercise names no concept or its cards were salvaged without one. Card
+	// references are flattened — an exercise is not a card and has nothing to
+	// link back to.
+	function lessonMaterial(conceptId?: string) {
+		const cards = items.filter(
+			(item) => item.kind === "card" && item.card?.type === "step",
+		);
+		const scoped = conceptId
+			? cards.filter((item) => item.card?.conceptId === conceptId)
+			: [];
+		const chosen = scoped.length > 0 ? scoped : cards;
+		return chosen
+			.map((item) => {
+				if (!item.card) return "";
+				// The takeaway is material the learner read too, so a replacement
+				// exercise may fairly blank a term the card only spelled out there.
+				const takeaway = item.card.takeaway
+					? `\n\nKey takeaway: ${stripCardRefs(item.card.takeaway)}`
+					: "";
+				return `## ${item.card.title}\n\n${stripCardRefs(item.card.body)}${takeaway}`;
+			})
+			.join("\n\n");
 	}
 
 	// The sidebar's outline is navigation: selecting a concept jumps the feed
@@ -663,10 +1280,17 @@ export default function App() {
 			: tab === "notes"
 				? "Notes"
 				: (outline?.[currentIndex]?.title ?? topic ?? "Lesson");
+	// The kicker sits above the title and must never repeat it. On the lesson
+	// tab the title is already the topic until an outline exists, so the kicker
+	// says where in the lesson we are instead.
 	const paneKicker =
-		tab === "lesson" && outline && currentIndex >= 0
-			? `Concept ${currentIndex + 1} of ${outline.length}`
-			: topic || "Lesson";
+		tab !== "lesson"
+			? topic || "Lesson"
+			: outline
+				? currentIndex >= 0
+					? `Concept ${currentIndex + 1} of ${outline.length}`
+					: "Lesson"
+				: "New lesson";
 
 	return (
 		<Tabs
@@ -679,6 +1303,10 @@ export default function App() {
 			{sidebarOpen && (
 				<LessonSidebar
 					topic={topic}
+					project={
+						lessonConfig?.mode === "codebase" ? lessonConfig.project : undefined
+					}
+					goal={goal}
 					outline={outline}
 					currentIndex={currentIndex}
 					lessonEnded={lessonEnded}
@@ -746,6 +1374,7 @@ export default function App() {
 								items={practice}
 								onUpdate={updatePractice}
 								conceptTitle={conceptTitle}
+								lessonMaterial={lessonMaterial}
 							/>
 						</TabsContent>
 						<TabsContent value="notes" className={cn(COLUMN, "pt-6 text-base")}>
@@ -753,9 +1382,51 @@ export default function App() {
 						</TabsContent>
 						<TabsContent
 							value="lesson"
-							className={cn(COLUMN, "pt-7 text-base")}
+							// What is in the margin decides how much width the column
+							// gives up for it: a note is a scrap of paper, a thread is a
+							// conversation and needs room to be one.
+							data-margin={
+								threads.length > 0
+									? "threads"
+									: stickies.length > 0
+										? "notes"
+										: undefined
+							}
+							className="feed-column px-8 pt-7 text-base"
 						>
-							<div className="space-y-5 pb-10">
+							<MarginLayer
+								items={marginItems}
+								feedRef={feedListRef}
+								renderItem={(entry, register) =>
+									entry.kind === "note" ? (
+										<StickyCard
+											key={entry.id}
+											sticky={entry}
+											autoFocus={entry.id === focusSticky}
+											onFocused={clearStickyFocus}
+											onChange={updateSticky}
+											onRemove={removeSticky}
+											onDone={finishSticky}
+											register={register}
+										/>
+									) : (
+										<ThreadCard
+											key={entry.id}
+											thread={entry}
+											open={openThread?.id === entry.id}
+											sectionText={openThread?.section ?? ""}
+											onOpen={() =>
+												openQuestion(entry.itemId, entry.segmentIndex)
+											}
+											onClose={() => closeThread(entry)}
+											onAsk={(question) => void askInThread(entry.id, question)}
+											onRemove={() => removeThread(entry.id)}
+											register={register}
+										/>
+									)
+								}
+							/>
+							<div ref={feedListRef} className="space-y-5 pb-10">
 								{items.map((item, index) => {
 									if (item.kind === "user") {
 										return (
@@ -817,170 +1488,286 @@ export default function App() {
 										!!concept &&
 										concept !== conceptTitle(previousCard?.card?.conceptId);
 									return (
-										<UICard
+										// The feed ITEM, not the card: a takeaway rides under the
+										// card as a second element, and both belong to one item.
+										// Every section coordinate in the app — the reading
+										// position, the dimming rules in index.css, a sticky
+										// note's anchor — is (item id, section index), so
+										// data-item-id has to sit above both of them.
+										// biome-ignore lint/a11y/useKeyWithClickEvents: clicking a section is a pointer shortcut into keyboard reading; the arrow keys already drive the same thing from a window-level handler (see the reading effect above)
+										// biome-ignore lint/a11y/noStaticElementInteractions: as above — the click adds nothing that is not already on the keyboard
+										<div
 											key={item.id}
 											data-item-id={item.id}
 											data-concept-id={card?.conceptId}
-											className={cn(
-												"scroll-mt-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500",
-												isRecap && "bg-accent/60",
-											)}
+											data-card-ref={
+												card?.title ? cardRefSlug(card.title) : undefined
+											}
+											className="scroll-mt-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500"
+											// Clicking a section puts the reading position there.
+											// Bound here rather than on the card body so the
+											// takeaway panel below the card answers to it too.
+											onClick={(event) => selectSegment(item.id, event)}
 										>
-											<CardHeader className="gap-2">
-												{(isRecap || showConcept) && (
-													<div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-														{isRecap && (
+											<UICard
+												className={cn("relative", isRecap && "bg-accent/60")}
+												// Tracked on the whole card, not on its body: the add
+												// button sits in the card's padding, and losing the
+												// hover the moment the pointer left the text would
+												// take the button away before it could be clicked.
+												onMouseOver={(event) => trackSection(item.id, event)}
+												onMouseLeave={() => setHoverSection(null)}
+											>
+												<CardHeader className="gap-2">
+													{(isRecap || item.followUp || showConcept) && (
+														<div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+															{(isRecap || item.followUp) && (
+																<HugeiconsIcon
+																	icon={
+																		isRecap ? Award01Icon : MessageQuestionIcon
+																	}
+																	className="size-4 shrink-0"
+																/>
+															)}
+															<span className="truncate">
+																{isRecap
+																	? "Recap"
+																	: item.followUp
+																		? "Follow-up"
+																		: concept}
+															</span>
+														</div>
+													)}
+													<CardTitle className="text-[1.5rem] leading-[1.3] font-[560] tracking-[-0.022em]">
+														{card?.title}
+													</CardTitle>
+												</CardHeader>
+												<CardContent
+													data-explainable
+													className="reading prose prose-lg max-w-none dark:prose-invert"
+												>
+													<CardMarkdown
+														body={card?.body ?? ""}
+														onCardRef={goToCard}
+														resolveCardRef={resolveCardRef}
+													/>
+												</CardContent>
+												{/* One button, moved to whichever section is under the
+											    pointer — the same pair ArrowRight and ArrowLeft do by
+											    keyboard. A child of the card and not of its body: prose
+											    zeroes the margin under its own last child, so buttons
+											    appearing there hand that margin back and grow the card
+											    by a line as the pointer arrives. */}
+												{hoverSection?.itemId === item.id && (
+													<div
+														className="section-actions"
+														style={{ top: hoverSection.top }}
+													>
+														<button
+															type="button"
+															aria-label="Ask about this section"
+															onClick={() =>
+																openQuestion(item.id, hoverSection.index)
+															}
+														>
 															<HugeiconsIcon
-																icon={Award01Icon}
-																className="size-4 shrink-0"
+																icon={MessageQuestionIcon}
+																className="size-3.5"
 															/>
-														)}
-														<span className="truncate">
-															{isRecap ? "Recap" : concept}
-														</span>
+														</button>
+														<button
+															type="button"
+															aria-label="Add a note to this section"
+															onClick={() =>
+																addSticky(item.id, hoverSection.index)
+															}
+														>
+															<HugeiconsIcon
+																icon={StickyNote01Icon}
+																className="size-3.5"
+															/>
+														</button>
 													</div>
 												)}
-												<CardTitle className="text-[1.5rem] leading-[1.3] font-[560] tracking-[-0.022em]">
-													{card?.title}
-												</CardTitle>
-											</CardHeader>
-											{/* Clicking a section is a shortcut into keyboard reading;
-											    the arrow keys drive the same thing without it. */}
-											<CardContent
-												data-explainable
-												className="reading prose prose-lg max-w-none dark:prose-invert"
-												onClick={(event) => selectSegment(item.id, event)}
-											>
-												<CardMarkdown body={card?.body ?? ""} />
-											</CardContent>
-											{suggestions && suggestions.length > 0 && (
-												<CardContent className="flex flex-col gap-2">
-													<p className="mb-1 text-sm text-muted-foreground">
-														Keep learning
-													</p>
-													{suggestions.map((suggestion) => (
+												{/* The way back, on the card that ends the detour. Built
+												    from the lesson's own config and not from anything the
+												    tutor wrote, so it is there whether or not the recap
+												    remembered to mention where the learner was heading. */}
+												{isRecap && goal && (
+													<CardContent className="flex flex-col gap-2">
+														<p className="mb-1 text-sm text-muted-foreground">
+															What you came for
+														</p>
 														<button
-															key={suggestion}
 															type="button"
 															disabled={loading}
-															onClick={() => startLesson(suggestion)}
-															className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 text-left transition-all hover:border-foreground/15 hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
+															onClick={() => startGoal(goal)}
+															className="group flex items-center gap-3 rounded-2xl bg-marker/8 p-3.5 text-left ring-1 ring-marker/25 transition-all hover:shadow-sm hover:ring-marker/45 disabled:pointer-events-none disabled:opacity-50"
 														>
-															<span className="flex-1 text-[0.95rem] font-medium">
-																{suggestion}
+															<span className="grid size-8 shrink-0 place-items-center rounded-full bg-marker/12 text-marker">
+																<HugeiconsIcon
+																	icon={Flag01Icon}
+																	className="size-4"
+																/>
 															</span>
-															<span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
+															<span className="flex-1 text-[0.95rem] font-medium">
+																{goal.topic}
+															</span>
+															<span className="grid size-8 shrink-0 place-items-center rounded-full bg-marker text-marker-foreground">
 																<HugeiconsIcon
 																	icon={ArrowRight01Icon}
 																	className="size-4.5"
 																/>
 															</span>
 														</button>
-													))}
-												</CardContent>
-											)}
-											{options && (
-												<CardContent className="flex flex-col gap-2.5">
-													{options.map((option) => {
-														const selected = item.selectedOption === option.id;
-														const answered = item.selectedOption !== undefined;
-														return (
-															<Button
-																key={option.id}
+													</CardContent>
+												)}
+												{suggestions && suggestions.length > 0 && (
+													<CardContent className="flex flex-col gap-2">
+														<p className="mb-1 text-sm text-muted-foreground">
+															Keep learning
+														</p>
+														{suggestions.map((suggestion) => (
+															<button
+																key={suggestion}
 																type="button"
-																variant={selected ? "default" : "outline"}
-																className={cn(
-																	"h-auto justify-start gap-3.5 rounded-2xl p-3.5 text-left whitespace-normal",
-																	!selected && "hover:border-primary/35",
-																)}
-																disabled={loading || (answered && !selected)}
-																onClick={() => {
-																	if (!answered) chooseOption(item.id, option);
-																}}
+																disabled={loading}
+																onClick={() =>
+																	startLesson(suggestion, {
+																		from:
+																			lessonConfig?.mode === "codebase"
+																				? lessonConfig.project
+																				: null,
+																	})
+																}
+																className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 text-left transition-all hover:border-foreground/15 hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
 															>
-																<span
-																	className={cn(
-																		"grid size-9 shrink-0 place-items-center rounded-xl",
-																		selected
-																			? "bg-primary-foreground/15"
-																			: "bg-card text-muted-foreground shadow-xs ring-1 ring-border",
-																	)}
-																>
+																<span className="flex-1 text-[0.95rem] font-medium">
+																	{suggestion}
+																</span>
+																<span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
 																	<HugeiconsIcon
-																		icon={
-																			selected
-																				? Tick02Icon
-																				: (OPTION_ICONS[option.id] ??
-																					CompassIcon)
-																		}
+																		icon={ArrowRight01Icon}
 																		className="size-4.5"
 																	/>
 																</span>
-																<span className="flex flex-col gap-0.5">
-																	<span className="text-[0.95rem] font-semibold">
-																		{option.label}
-																	</span>
-																	{option.description && (
-																		<span
-																			className={cn(
-																				"text-sm font-normal",
-																				selected
-																					? "text-primary-foreground/75"
-																					: "text-muted-foreground",
-																			)}
-																		>
-																			{option.description}
-																		</span>
+															</button>
+														))}
+													</CardContent>
+												)}
+												{options && (
+													<CardContent className="flex flex-col gap-2.5">
+														{options.map((option) => {
+															const selected =
+																item.selectedOption === option.id;
+															const answered =
+																item.selectedOption !== undefined;
+															return (
+																<Button
+																	key={option.id}
+																	type="button"
+																	variant={selected ? "default" : "outline"}
+																	className={cn(
+																		"h-auto justify-start gap-3.5 rounded-2xl p-3.5 text-left whitespace-normal",
+																		!selected && "hover:border-primary/35",
 																	)}
-																</span>
-															</Button>
-														);
-													})}
-												</CardContent>
-											)}
-										</UICard>
+																	disabled={loading || (answered && !selected)}
+																	onClick={() => {
+																		if (!answered)
+																			chooseOption(item.id, option);
+																	}}
+																>
+																	<span
+																		className={cn(
+																			"grid size-9 shrink-0 place-items-center rounded-xl",
+																			selected
+																				? "bg-primary-foreground/15"
+																				: "bg-card text-muted-foreground shadow-xs ring-1 ring-border",
+																		)}
+																	>
+																		<HugeiconsIcon
+																			icon={
+																				selected
+																					? Tick02Icon
+																					: (OPTION_ICONS[option.id] ??
+																						CompassIcon)
+																			}
+																			className="size-4.5"
+																		/>
+																	</span>
+																	<span className="flex flex-col gap-0.5">
+																		<span className="text-[0.95rem] font-semibold">
+																			{option.label}
+																		</span>
+																		{option.description && (
+																			<span
+																				className={cn(
+																					"text-sm font-normal",
+																					selected
+																						? "text-primary-foreground/75"
+																						: "text-muted-foreground",
+																				)}
+																			>
+																				{option.description}
+																			</span>
+																		)}
+																	</span>
+																</Button>
+															);
+														})}
+													</CardContent>
+												)}
+												{/* A fourth answer to the level question: none of the
+												    above, start me one step back. Disabled once a level
+												    has been picked — by then the lesson it would throw
+												    away is a lesson in progress. */}
+												{card?.prerequisite && (
+													<CardContent>
+														<PrerequisiteOffer
+															prerequisite={card.prerequisite}
+															goalTopic={topic}
+															disabled={
+																loading || item.selectedOption !== undefined
+															}
+															onStart={startPrerequisite}
+														/>
+													</CardContent>
+												)}
+											</UICard>
+											{card?.takeaway && <TakeawayNote text={card.takeaway} />}
+										</div>
 									);
 								})}
-								{streaming ? (
-									<UICard className="animate-in fade-in-0 duration-300">
-										<CardHeader>
-											<div className="flex items-center gap-2 text-sm text-muted-foreground">
-												<PulseDot />
-												Writing
-											</div>
-											{streaming.title && (
-												<CardTitle className="text-[1.45rem] leading-[1.25] font-semibold tracking-[-0.02em]">
-													{streaming.title}
-												</CardTitle>
-											)}
-										</CardHeader>
-										<CardContent className="reading prose prose-lg max-w-none dark:prose-invert">
-											<Markdown>{streaming.body}</Markdown>
-											<span className="ml-0.5 inline-block h-5 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-marker align-baseline" />
-										</CardContent>
-									</UICard>
+								{planningStage ? (
+									<LessonPlanning
+										topic={topic}
+										project={
+											lessonConfig?.mode === "codebase"
+												? lessonConfig.project
+												: undefined
+										}
+										stage={planningStage}
+										activity={
+											showDemoLookups
+												? DEMO_ACTIVITY.at(-1)
+												: streaming?.activity
+										}
+										trail={showDemoLookups ? DEMO_ACTIVITY : activityTrail}
+									/>
+								) : streaming ? (
+									<PendingCard
+										label={streaming.activity || "Writing"}
+										title={streaming.title}
+										body={streaming.body}
+									/>
 								) : (
-									loading && (
-										<UICard className="animate-in fade-in-0 duration-300">
-											<CardHeader>
-												<div className="flex items-center gap-2 text-sm text-muted-foreground">
-													<PulseDot />
-													<span className="shimmer">Thinking</span>
-												</div>
-												<Skeleton className="mt-1 h-7 w-2/5 rounded-lg" />
-											</CardHeader>
-											<CardContent className="space-y-2.5">
-												<Skeleton className="h-4 w-full rounded-md" />
-												<Skeleton className="h-4 w-11/12 rounded-md" />
-												<Skeleton className="h-4 w-3/5 rounded-md" />
-											</CardContent>
-										</UICard>
-									)
+									loading && <PendingCard label="Thinking" />
 								)}
 								<div ref={bottomRef} />
 							</div>
 						</TabsContent>
 					</div>
+					{tab === "lesson" && planningStage && <PlanningWash />}
 					{/* Content dissolves at the pane edge instead of being cut off */}
 					<div
 						aria-hidden
@@ -989,58 +1776,242 @@ export default function App() {
 					<ReadingHint trigger={hintNonce} />
 				</div>
 
+				{/* No composer while the lesson runs. A question about the material
+				    belongs beside the passage that raised it, not in a box at the
+				    bottom that has forgotten which one that was — so the bar spends
+				    its width saying which keys do what instead, and free text comes
+				    back only at the end, for follow-ups. */}
 				{tab === "lesson" && (
 					<div className="shrink-0 border-t border-border/70 bg-background py-3.5">
-						<form
-							className={cn(COLUMN, "flex gap-2.5")}
-							onSubmit={(event) => {
-								event.preventDefault();
-								sendMessage();
-							}}
-						>
-							<Input
-								value={input}
-								onChange={(event) => setInput(event.target.value)}
-								placeholder="Ask a question…"
-								className="h-12 rounded-2xl border-border bg-card px-4 shadow-xs"
-								disabled={loading}
-							/>
-							{input.trim() ? (
+						{followUpOpen ? (
+							<form
+								className={cn(COLUMN, "flex gap-2.5")}
+								onSubmit={(event) => {
+									event.preventDefault();
+									askFollowUp();
+								}}
+							>
+								<Input
+									autoFocus
+									value={input}
+									onChange={(event) => setInput(event.target.value)}
+									placeholder="What else would you like to know?"
+									className="h-12 rounded-2xl border-border bg-card px-4 shadow-xs"
+									disabled={loading}
+								/>
 								<Button
 									type="submit"
 									className="h-12 shrink-0 gap-2 rounded-2xl px-5"
-									disabled={loading}
+									disabled={loading || !input.trim()}
 								>
-									Send
+									Ask
 									<HugeiconsIcon icon={SentIcon} className="size-4.5" />
 								</Button>
-							) : lessonEnded ? (
-								<Button
-									type="button"
-									className="h-12 shrink-0 rounded-2xl px-5"
-									disabled={loading}
-									onClick={goHome}
-								>
-									New lesson
-								</Button>
-							) : (
-								<Button
-									type="button"
-									className="h-12 shrink-0 gap-2.5 rounded-2xl pr-3 pl-5"
-									disabled={loading}
-									onClick={() => continueLesson()}
-								>
-									Continue
-									<kbd className="grid h-6 w-6 place-items-center rounded-lg bg-primary-foreground/15 text-xs">
-										↓
-									</kbd>
-								</Button>
-							)}
-						</form>
+							</form>
+						) : (
+							<div className={cn(COLUMN, "flex items-center gap-2.5")}>
+								<ReadingKeys />
+								{lessonEnded ? (
+									<>
+										<Button
+											type="button"
+											variant="outline"
+											className="h-12 shrink-0 gap-2 rounded-2xl px-5"
+											disabled={loading}
+											onClick={() => setFollowUpOpen(true)}
+										>
+											<HugeiconsIcon
+												icon={MessageQuestionIcon}
+												className="size-4.5"
+											/>
+											Ask a follow-up
+										</Button>
+										<Button
+											type="button"
+											className="h-12 shrink-0 rounded-2xl px-5"
+											disabled={loading}
+											onClick={goHome}
+										>
+											New lesson
+										</Button>
+									</>
+								) : (
+									<Button
+										type="button"
+										className="h-12 shrink-0 gap-2.5 rounded-2xl pr-3 pl-5"
+										disabled={loading}
+										onClick={() => continueLesson()}
+									>
+										Continue
+										<kbd className="grid h-6 w-6 place-items-center rounded-lg bg-primary-foreground/15 text-xs">
+											↓
+										</kbd>
+									</Button>
+								)}
+							</div>
+						)}
 					</div>
 				)}
 			</main>
 		</Tabs>
+	);
+}
+
+// The card in the making: the same frame the finished card lands in, filled
+// with whatever exists yet. The label says what the tutor is doing — thinking,
+// writing, or, when it teaches from a project, which file it is reading.
+function PendingCard({
+	label,
+	title,
+	body,
+}: {
+	label: string;
+	title?: string;
+	body?: string;
+}) {
+	const empty = !title && !body;
+	return (
+		<UICard className="animate-in fade-in-0 duration-300">
+			<CardHeader>
+				<div className="flex items-center gap-2 text-sm text-muted-foreground">
+					<PulseDot />
+					<span className={cn("min-w-0 truncate", empty && "shimmer")}>
+						{label}
+					</span>
+				</div>
+				{title ? (
+					<CardTitle className="text-[1.45rem] leading-[1.25] font-semibold tracking-[-0.02em]">
+						{title}
+					</CardTitle>
+				) : (
+					<Skeleton className="mt-1 h-7 w-2/5 rounded-lg" />
+				)}
+			</CardHeader>
+			{body ? (
+				<CardContent className="reading prose prose-lg max-w-none dark:prose-invert">
+					{/* The preview is transient and has no card to jump to yet, so a
+					    reference reads as the plain name here — and a marker still
+					    half-streamed is dropped rather than shown as syntax. */}
+					<Markdown>{stripCardRefs(body)}</Markdown>
+					<span className="ml-0.5 inline-block h-5 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-marker align-baseline" />
+				</CardContent>
+			) : (
+				<CardContent className="space-y-2.5">
+					<Skeleton className="h-4 w-full rounded-md" />
+					<Skeleton className="h-4 w-11/12 rounded-md" />
+					<Skeleton className="h-4 w-3/5 rounded-md" />
+				</CardContent>
+			)}
+		</UICard>
+	);
+}
+
+// "Actually, start me one step back." Sits under the level options as a fourth
+// answer to the same question, so it is built like one — but dashed and
+// marker-accented, because it does something different from the three above it:
+// it replaces this lesson rather than starting it.
+//
+// The tutor supplies two facts, the subject and why this one rests on it; the
+// button and the promise to come back are the app's words, so the offer says
+// the same thing in every lesson and cannot promise something the app does not
+// then do.
+function PrerequisiteOffer({
+	prerequisite,
+	goalTopic,
+	disabled,
+	onStart,
+}: {
+	prerequisite: Prerequisite;
+	// What the learner asked for, and will be brought back to
+	goalTopic: string;
+	disabled: boolean;
+	onStart: (prerequisite: Prerequisite) => void;
+}) {
+	return (
+		<>
+			<div className="flex items-center gap-3 pb-3">
+				<span className="h-px flex-1 bg-border" />
+				<span className="text-xs text-muted-foreground">or</span>
+				<span className="h-px flex-1 bg-border" />
+			</div>
+			<Button
+				type="button"
+				variant="outline"
+				className="h-auto w-full justify-start gap-3.5 rounded-2xl border-dashed p-3.5 text-left whitespace-normal hover:border-marker/45"
+				disabled={disabled}
+				onClick={() => onStart(prerequisite)}
+			>
+				<span className="grid size-9 shrink-0 place-items-center rounded-xl bg-marker/12 text-marker">
+					<HugeiconsIcon icon={Stairs01Icon} className="size-4.5" />
+				</span>
+				<span className="flex flex-col gap-0.5">
+					<span className="text-[0.95rem] font-semibold">
+						Start with {prerequisite.topic}
+					</span>
+					<span className="text-sm font-normal text-muted-foreground">
+						{prerequisite.reason} We'll come back to {goalTopic} after.
+					</span>
+				</span>
+			</Button>
+		</>
+	);
+}
+
+// The one line worth keeping from the card above it. Smaller than a card — no
+// title, a line or two of text — and louder: the marker tint is the same accent
+// the reading position and the practice blank use, so it reads as a moment
+// inside the lesson rather than as a second card competing with the first.
+//
+// It is a reading section of its own, and the last one of its card, so stepping
+// through with the arrow keys ends here and the next ArrowDown is Continue. The
+// panel itself carries [data-segment] rather than the paragraph inside it: the
+// whole panel then dims with the rest of the card while another section is
+// being read, and its position bar lands in the same gutter column as the
+// body's — which is what the inset in `.takeaway` is measured against.
+function TakeawayNote({ text }: { text: string }) {
+	return (
+		<div className="takeaway" data-segment>
+			<p className="takeaway__label">
+				<HugeiconsIcon icon={Idea01Icon} className="size-3.5 shrink-0" />
+				Key takeaway
+			</p>
+			{/* One sentence, at most a name in backticks (see prompts/tutor.md), and
+			    nothing to link back to — a reference here reads as plain words. */}
+			<div className="takeaway__text" data-explainable data-section-text>
+				<Markdown>{stripCardRefs(text)}</Markdown>
+			</div>
+		</div>
+	);
+}
+
+// What the composer used to be. The keys are the whole interface to a lesson
+// now, and none of them announce themselves, so the bar that had a text box in
+// it says what they do instead — quietly, and in the same place every time.
+function ReadingKeys() {
+	return (
+		<p className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+			<KeyHint keys={["↑", "↓"]} label="read" />
+			<KeyHint keys={["→"]} label="ask about a section" />
+			<KeyHint keys={["←"]} label="pin a note" />
+		</p>
+	);
+}
+
+function KeyHint({ keys, label }: { keys: string[]; label: string }) {
+	return (
+		<span className="flex items-center gap-1.5">
+			<span className="flex gap-0.5">
+				{keys.map((key) => (
+					<kbd
+						key={key}
+						className="grid size-5 place-items-center rounded-md bg-foreground/7 text-[0.7rem]"
+					>
+						{key}
+					</kbd>
+				))}
+			</span>
+			{label}
+		</span>
 	);
 }
 
