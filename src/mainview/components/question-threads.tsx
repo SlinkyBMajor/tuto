@@ -76,7 +76,7 @@ export function ThreadCard({
 }) {
 	const [draft, setDraft] = useState("");
 	const inputRef = useRef<HTMLTextAreaElement>(null);
-	const endRef = useRef<HTMLDivElement>(null);
+	const logRef = useRef<HTMLDivElement>(null);
 	const first = thread.messages[0];
 	const answer = thread.messages.find((message) => message.role === "tutor");
 
@@ -88,10 +88,18 @@ export function ThreadCard({
 		if (open) inputRef.current?.focus({ preventScroll: true });
 	}, [open]);
 
-	// Follow the conversation as it grows, inside the thread's own scroller
+	// Follow the conversation as it grows — by scrolling the log itself, never
+	// with scrollIntoView. That walks every scrollable ancestor, so it would
+	// scroll the LESSON as well, and it runs before MarginLayer has placed this
+	// card, so it would scroll the lesson to where the card used to be. Opening
+	// a thread must not move the page at all; the only thing allowed to is the
+	// fitting effect in App.tsx, and only when the thread would not otherwise
+	// be on screen.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the message count and the in-flight flag are triggers, not values — each one makes the log taller, which is the whole reason to scroll it
 	useLayoutEffect(() => {
-		if (open) endRef.current?.scrollIntoView({ block: "nearest" });
-	}, [open]);
+		const log = logRef.current;
+		if (open && log) log.scrollTop = log.scrollHeight;
+	}, [open, thread.messages.length, thread.pending]);
 
 	function send() {
 		const question = draft.trim();
@@ -160,7 +168,7 @@ export function ThreadCard({
 					<HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
 				</button>
 			</div>
-			<div className="thread__log">
+			<div ref={logRef} className="thread__log">
 				{thread.messages.map((message, index) => (
 					<div
 						// biome-ignore lint/suspicious/noArrayIndexKey: a thread's messages are append-only and never reordered or removed, so the index IS the identity — and two identical questions in one thread would collide on any key derived from the text
@@ -188,7 +196,6 @@ export function ThreadCard({
 					</div>
 				)}
 				{thread.error && <p className="thread__error">{thread.error}</p>}
-				<div ref={endRef} />
 			</div>
 			<div className="thread__composer">
 				<textarea

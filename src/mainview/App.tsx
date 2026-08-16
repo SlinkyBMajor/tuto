@@ -181,6 +181,62 @@ function segmentsOf(itemId: number): Element[] {
 // The words of one section, for a question asked about it. Read out of the DOM
 // like the sections themselves, so a code block or a diagram's rendered labels
 // arrive as the learner sees them rather than as markdown source.
+// How far past a section's own box still counts as its row: the pointer sitting
+// in the blank line between two paragraphs belongs to one of them, not to
+// neither. Roughly the paragraph spacing, so the gaps are covered and the card's
+// header and footer padding are not.
+const ROW_SLACK = 22;
+// Breathing room left below an open thread when the lesson has to scroll to fit
+// one — enough that it does not sit flush against the key bar.
+const THREAD_FIT_GAP = 16;
+// Used only for the frame before the rail has been measured — after that its
+// real height is read off the element.
+const RAIL_HEIGHT_FALLBACK = 62;
+
+// Which section the pointer's height puts it on, and how tall that section is.
+// Sections nest — a paragraph inside a list item — and the innermost is the one
+// the reading position lands on, so the smallest box containing the pointer
+// wins. A pointer in the gap between two sections takes the nearer one.
+interface SectionRow {
+	index: number;
+	top: number;
+	bottom: number;
+	// How far the pointer is outside the section, and how tall it is — used only
+	// to choose between candidates
+	gap: number;
+	height: number;
+}
+
+function sectionRowAt(itemId: number, clientY: number): SectionRow | null {
+	let inside: SectionRow | null = null;
+	let nearest: SectionRow | null = null;
+	const segments = segmentsOf(itemId);
+	for (let index = 0; index < segments.length; index++) {
+		const box = segments[index]?.getBoundingClientRect();
+		if (!box) continue;
+		const gap =
+			clientY < box.top
+				? box.top - clientY
+				: clientY > box.bottom
+					? clientY - box.bottom
+					: 0;
+		const row: SectionRow = {
+			index,
+			top: box.top,
+			bottom: box.bottom,
+			gap,
+			height: box.height,
+		};
+		if (gap === 0) {
+			if (!inside || row.height < inside.height) inside = row;
+		} else if (!nearest || gap < nearest.gap) {
+			nearest = row;
+		}
+	}
+	if (inside) return inside;
+	return nearest && nearest.gap <= ROW_SLACK ? nearest : null;
+}
+
 function sectionTextOf(itemId: number, index: number): string {
 	const segment = segmentsOf(itemId)[index];
 	// A section can carry chrome that is not part of the passage: a code block's
@@ -301,12 +357,16 @@ export default function App() {
 	// After the recap, the composer for a follow-up question — the only place in
 	// a lesson that still takes free text into the lesson itself
 	const [followUpOpen, setFollowUpOpen] = useState(false);
-	// The section under the pointer, carrying where to draw its add button
+	// The section under the pointer. Only which one — where its action rail is
+	// drawn changes with every mouse move and is written to the DOM instead, the
+	// same way the reading highlight and the margin's positions are: a re-render
+	// of the whole feed per pixel of pointer travel is not affordable.
 	const [hoverSection, setHoverSection] = useState<{
 		itemId: number;
 		index: number;
-		top: number;
 	} | null>(null);
+	const railRef = useRef<HTMLDivElement>(null);
+	const railTopRef = useRef(0);
 	// Bumped each time reading mode is entered from nothing, to flash the
 	// arrow-key hint
 	const [hintNonce, setHintNonce] = useState(0);
@@ -788,31 +848,42 @@ export default function App() {
 		if (index >= 0) moveHighlight(itemId, index, { scroll: false });
 	}
 
-	// Point at a section and its add-a-note button appears level with it. The
-	// pointer then has to leave the text to reach that button, so anything that
-	// is not a section leaves the last one standing; only leaving the card
-	// clears it. The state also changes only when the section does, so running
-	// the pointer along a paragraph doesn't re-render the feed.
+	// Point at a card and the section under the pointer offers its two actions.
 	//
-	// The offset is measured rather than read off offsetTop: segments are
-	// positioned, so a paragraph nested in a list would measure from the list.
+	// The section is resolved by the pointer's HEIGHT, not by what is underneath
+	// it. Asking `closest("[data-segment]")` only ever matches inside the words,
+	// so the whole gutter — the very direction you move in to reach the buttons —
+	// resolved to nothing, and coming at a card from the right showed you
+	// nothing at all. Every y inside the card's run of sections now belongs to
+	// one, text or not.
 	function trackSection(
 		itemId: number,
 		event: ReactMouseEvent<HTMLDivElement>,
 	) {
-		const segment = (event.target as HTMLElement).closest<HTMLElement>(
-			"[data-segment]",
+		const row = sectionRowAt(itemId, event.clientY);
+		if (!row) {
+			// Above the first section or below the last — the title, the options,
+			// the padding at the foot of the card. Nothing to offer there.
+			setHoverSection((prev) => (prev?.itemId === itemId ? null : prev));
+			return;
+		}
+		// The rail rides at the pointer's own height, held inside the section, so
+		// reaching it is a straight move sideways — not a diagonal up to the top
+		// of a paragraph you happen to be reading the last line of. Once the
+		// pointer is on the rail, the rail is centred on the pointer, so it can't
+		// slide out from under it.
+		const railHeight = railRef.current?.offsetHeight || RAIL_HEIGHT_FALLBACK;
+		const lowest = Math.max(row.bottom - railHeight, row.top);
+		const top = Math.round(
+			Math.min(Math.max(event.clientY - railHeight / 2, row.top), lowest) -
+				event.currentTarget.getBoundingClientRect().top,
 		);
-		if (!segment) return;
-		const index = segmentsOf(itemId).indexOf(segment);
-		if (index < 0) return;
-		const top =
-			segment.getBoundingClientRect().top -
-			event.currentTarget.getBoundingClientRect().top;
+		railTopRef.current = top;
+		if (railRef.current) railRef.current.style.top = `${top}px`;
 		setHoverSection((prev) =>
-			prev?.itemId === itemId && prev.index === index
+			prev?.itemId === itemId && prev.index === row.index
 				? prev
-				: { itemId, index, top },
+				: { itemId, index: row.index },
 		);
 	}
 
@@ -974,23 +1045,31 @@ export default function App() {
 		}
 	}, [threads, items]);
 
-	// An open thread grows downwards from the section it hangs off, so the end
-	// of the conversation — and the box for adding to it — can fall past the
-	// bottom of the pane. Scroll by exactly as much as that takes, and only when
-	// it takes any: a thread that already fits must not move the lesson under
-	// the learner just because they opened it.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: threads is an intentional trigger — each answer makes the open thread taller, and the room it needs has to be found again
+	// An open thread grows downwards from the section it hangs off, so the end of
+	// the conversation — and the box for adding to it — can fall past the bottom
+	// of the pane. This is the ONLY thing allowed to scroll the lesson when a
+	// thread opens, and it does the least it can: nothing at all when the thread
+	// is already on screen, and otherwise exactly enough to bring its bottom
+	// into view. Opening a thread should leave the passage you were reading
+	// where you left it.
+	//
+	// Capped so the scroll can never push the thread's own top out of the pane:
+	// on a window too short to hold the whole thread, seeing where it starts
+	// beats seeing where it ends.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: threads is an intentional trigger — each answer makes the open thread taller, so the room it needs has to be found again
 	useEffect(() => {
 		if (!openThread) return;
 		const pane = feedRef.current;
 		const thread = document.querySelector("[data-thread][data-open]");
 		if (!pane || !thread) return;
-		const overflow =
-			thread.getBoundingClientRect().bottom -
-			pane.getBoundingClientRect().bottom +
-			16;
-		if (overflow > 0) {
-			pane.scrollTo({ top: pane.scrollTop + overflow, behavior: "smooth" });
+		const paneBox = pane.getBoundingClientRect();
+		const threadBox = thread.getBoundingClientRect();
+		const needed = threadBox.bottom - paneBox.bottom + THREAD_FIT_GAP;
+		if (needed <= 0) return;
+		const available = Math.max(threadBox.top - paneBox.top - THREAD_FIT_GAP, 0);
+		const delta = Math.min(needed, available);
+		if (delta > 0) {
+			pane.scrollTo({ top: pane.scrollTop + delta, behavior: "smooth" });
 		}
 	}, [openThread, threads]);
 
@@ -1510,20 +1589,20 @@ export default function App() {
 											data-card-ref={
 												card?.title ? cardRefSlug(card.title) : undefined
 											}
-											className="scroll-mt-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500"
+											className="relative scroll-mt-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-500"
 											// Clicking a section puts the reading position there.
 											// Bound here rather than on the card body so the
 											// takeaway panel below the card answers to it too.
 											onClick={(event) => selectSegment(item.id, event)}
+											// Tracked on the whole item for the same reason: every
+											// section of it can be pointed at, takeaway included,
+											// and the rail lives out here where the card's own
+											// overflow cannot clip it.
+											onMouseMove={(event) => trackSection(item.id, event)}
+											onMouseLeave={() => setHoverSection(null)}
 										>
 											<UICard
 												className={cn("relative", isRecap && "bg-accent/60")}
-												// Tracked on the whole card, not on its body: the add
-												// button sits in the card's padding, and losing the
-												// hover the moment the pointer left the text would
-												// take the button away before it could be clicked.
-												onMouseOver={(event) => trackSection(item.id, event)}
-												onMouseLeave={() => setHoverSection(null)}
 											>
 												<CardHeader className="gap-2">
 													{(isRecap || item.followUp || showConcept) && (
@@ -1559,43 +1638,6 @@ export default function App() {
 														resolveCardRef={resolveCardRef}
 													/>
 												</CardContent>
-												{/* One button, moved to whichever section is under the
-											    pointer — the same pair ArrowRight and ArrowLeft do by
-											    keyboard. A child of the card and not of its body: prose
-											    zeroes the margin under its own last child, so buttons
-											    appearing there hand that margin back and grow the card
-											    by a line as the pointer arrives. */}
-												{hoverSection?.itemId === item.id && (
-													<div
-														className="section-actions"
-														style={{ top: hoverSection.top }}
-													>
-														<button
-															type="button"
-															aria-label="Ask about this section"
-															onClick={() =>
-																openQuestion(item.id, hoverSection.index)
-															}
-														>
-															<HugeiconsIcon
-																icon={MessageQuestionIcon}
-																className="size-3.5"
-															/>
-														</button>
-														<button
-															type="button"
-															aria-label="Add a note to this section"
-															onClick={() =>
-																addSticky(item.id, hoverSection.index)
-															}
-														>
-															<HugeiconsIcon
-																icon={StickyNote01Icon}
-																className="size-3.5"
-															/>
-														</button>
-													</div>
-												)}
 												{/* The way back, on the card that ends the detour. Built
 												    from the lesson's own config and not from anything the
 												    tutor wrote, so it is there whether or not the recap
@@ -1742,6 +1784,45 @@ export default function App() {
 												)}
 											</UICard>
 											{card?.takeaway && <TakeawayNote text={card.takeaway} />}
+											{/* The two things you can hang off a section — the same
+											    pair ArrowRight and ArrowLeft do by keyboard. Out here
+											    with the takeaway rather than inside the card: the card
+											    clips its own overflow, and a rail that belongs to the
+											    whole item can serve the takeaway's section too. */}
+											{hoverSection?.itemId === item.id && (
+												<div
+													ref={railRef}
+													className="section-actions animate-in fade-in-0 duration-150"
+													style={{ top: railTopRef.current }}
+												>
+													<button
+														type="button"
+														title="Ask about this section  →"
+														aria-label="Ask about this section"
+														onClick={() =>
+															openQuestion(item.id, hoverSection.index)
+														}
+													>
+														<HugeiconsIcon
+															icon={MessageQuestionIcon}
+															className="size-3.5"
+														/>
+													</button>
+													<button
+														type="button"
+														title="Pin a note to this section  ←"
+														aria-label="Pin a note to this section"
+														onClick={() =>
+															addSticky(item.id, hoverSection.index)
+														}
+													>
+														<HugeiconsIcon
+															icon={StickyNote01Icon}
+															className="size-3.5"
+														/>
+													</button>
+												</div>
+											)}
 										</div>
 									);
 								})}

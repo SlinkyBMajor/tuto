@@ -34,11 +34,14 @@
 	--color-ring: var(--ring);
 	/* Inset surface: code blocks, diagrams, wells inside a card */
 	--color-surface: var(--surface);
-	/* The one chromatic colour. Chrome stays neutral ink; the marker is
-	   reserved for moments inside the content — where you are reading, the
-	   blank to fill, the term you selected, a link. */
+	/* Two chromatic colours, and only two. Chrome stays neutral ink; the marker
+	   is reserved for what you are DOING inside the content — where you are
+	   reading, the blank to fill, the term you selected, a link — and the
+	   highlight for the one thing worth KEEPING out of it, which today is the
+	   takeaway and nothing else. */
 	--color-marker: var(--marker);
 	--color-marker-foreground: var(--marker-foreground);
+	--color-highlight: var(--highlight);
 
 	/* "Large and rounded" (see docs/app-plan.md), dialled back from bubble
 	   to product — corners stay generous but stop swallowing the corners
@@ -89,6 +92,15 @@
 	--success: oklch(0.505 0.125 155);
 	--marker: oklch(0.485 0.175 273);
 	--marker-foreground: oklch(0.99 0.005 273);
+	/* The second accent: a bold, modern yellow, the colour of something marked
+	   to come back to. Four values rather than one mixed four ways — a yellow
+	   saturated enough to fill with is far too light to read as text, so the
+	   surface, the edge and the ink are picked for their jobs instead of
+	   derived from each other. */
+	--highlight: oklch(0.855 0.176 92);
+	--highlight-surface: oklch(0.955 0.08 95);
+	--highlight-edge: oklch(0.85 0.14 92);
+	--highlight-ink: oklch(0.5 0.115 78);
 	--border: oklch(0.92 0.004 286.32);
 	--input: oklch(0.92 0.004 286.32);
 	--ring: oklch(0.485 0.175 273);
@@ -142,6 +154,14 @@
 	--success: oklch(0.72 0.15 155);
 	--marker: oklch(0.7 0.15 274);
 	--marker-foreground: oklch(0.17 0.03 274);
+	/* The same yellow, but the roles swap: on a dark card the bold value is what
+	   the text is made of, and the surface is a warm, dim version of it. A
+	   saturated yellow panel on a dark canvas glares — the same reason the
+	   sticky notes drop their light in dark mode. */
+	--highlight: oklch(0.855 0.176 92);
+	--highlight-surface: oklch(0.26 0.045 88);
+	--highlight-edge: oklch(0.46 0.09 90);
+	--highlight-ink: oklch(0.87 0.15 92);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.7 0.15 274);
@@ -533,9 +553,10 @@ ol[data-segment].segment-active {
 /* --------------------------------------------------------------- takeaway */
 
 /* The one line worth keeping from the card above it: smaller than a card and
-   louder than one. The marker tint is the same accent the reading position and
-   the practice blank use, so it reads as a moment inside the lesson rather than
-   as a second card competing with the first.
+   louder than one. Yellow, and the only yellow in the app — the colour of
+   something marked to come back to, which is exactly what a takeaway is. It is
+   deliberately NOT the marker: the marker means "here is where you are", and a
+   takeaway is not a position, it is a keepsake.
 
    The inset is exactly the card's own padding (--card-spacing, 1.5rem), which
    buys two alignments at once: the panel's left edge sits under the card's
@@ -547,14 +568,9 @@ ol[data-segment].segment-active {
 	margin: 0.55rem 1.5rem 0;
 	padding: 0.8rem 1.1rem 0.85rem;
 	border-radius: var(--radius-xl);
-	/* oklab, not oklch: a light card is `oklch(1 0 0)`, whose hue is written as
-	   0 rather than as none, so mixing the marker into it in a polar space
-	   interpolates 273° towards 0° and the tint comes out pink. Every other mix
-	   in this file is against `transparent`, which is premultiplied and keeps
-	   the marker's hue — this is the one that mixes against a real colour. */
-	background: color-mix(in oklab, var(--marker) 8%, var(--card));
+	background: var(--highlight-surface);
 	box-shadow:
-		inset 0 0 0 1px color-mix(in oklch, var(--marker) 20%, transparent),
+		inset 0 0 0 1px var(--highlight-edge),
 		var(--shadow-xs);
 	transition:
 		opacity 220ms ease,
@@ -565,7 +581,7 @@ ol[data-segment].segment-active {
    dimmed by then, so this only has to confirm where the position is. */
 .takeaway.segment-active {
 	box-shadow:
-		inset 0 0 0 1px color-mix(in oklch, var(--marker) 36%, transparent),
+		inset 0 0 0 1.5px var(--highlight),
 		var(--shadow-sm);
 }
 
@@ -574,7 +590,7 @@ ol[data-segment].segment-active {
 	align-items: center;
 	gap: 0.35rem;
 	margin-bottom: 0.28rem;
-	color: var(--marker);
+	color: var(--highlight-ink);
 	font-size: 0.74rem;
 	font-weight: 600;
 }
@@ -800,35 +816,49 @@ ol[data-segment].segment-active {
 	--sticky-ink: oklch(0.95 0.025 300);
 }
 
-/* What you can hang off a section: ask about it, or pin a note. Both sit in
-   the card's right padding, level with the section being pointed at, mirroring
-   the reading bar on the left. They have to stay INSIDE the card — a card clips
-   its own overflow, so anything hung past the edge disappears — and the padding
-   strip is the one place there that never lands on a word. */
+/* What you can hang off a section: ask about it, or pin a note. The rail rides
+   in the card's right padding — the one strip inside a card that never lands on
+   a word — at the height of the pointer itself, so reaching it is a move
+   sideways and it cannot slide out from under the pointer once reached.
+
+   It is a child of the feed ITEM, not of the card, so it is not clipped by the
+   card's own overflow and can serve the takeaway panel's section as well.
+
+   Quiet by default and loud only under the pointer: while you are reading there
+   is nothing here at all, and while you are pointing at a card there are two
+   small grey discs that colour when you reach them. */
 .section-actions {
 	position: absolute;
-	right: 0.2rem;
+	right: 0.15rem;
+	z-index: 1;
 	display: flex;
 	flex-direction: column;
-	gap: 0.15rem;
+	gap: 0.2rem;
+	/* Invisible margin around the discs. The icons stay small and quiet; the
+	   thing you have to hit does not — this is most of what made the old pair
+	   fiddly, and it costs nothing on screen. */
+	padding: 0.45rem 0.25rem;
 }
 
 .section-actions button {
 	display: grid;
 	place-items: center;
-	width: 1.2rem;
-	height: 1.2rem;
+	width: 1.45rem;
+	height: 1.45rem;
 	border-radius: 999px;
 	color: var(--muted-foreground);
 	background: var(--card);
+	box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent);
 	transition:
-		color 150ms ease,
-		background 150ms ease;
+		color 120ms ease,
+		background 120ms ease,
+		box-shadow 120ms ease;
 }
 
 .section-actions button:hover {
 	color: var(--marker);
 	background: color-mix(in oklch, var(--marker) 12%, var(--card));
+	box-shadow: 0 0 0 1px color-mix(in oklch, var(--marker) 35%, transparent);
 }
 
 .section-actions button:focus-visible {
