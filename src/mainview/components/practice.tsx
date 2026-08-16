@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { bun } from "@/lib/rpc";
+import { RAW_TEXT_INPUT } from "@/lib/text-input";
 import { cn } from "@/lib/utils";
 import type { Exercise } from "../../shared/types";
 
@@ -221,6 +222,7 @@ function ExerciseCard({
 							value={answer}
 							onChange={(event) => setAnswer(event.target.value)}
 							placeholder="What goes in the blank?"
+							{...RAW_TEXT_INPUT}
 							className="h-11 flex-1 rounded-2xl border-border bg-card px-4 font-mono text-[0.95rem]"
 						/>
 						<Button

@@ -76,6 +76,7 @@ import {
 	DEMO_TOPIC,
 } from "@/lib/demo";
 import { bun, onStreamCard } from "@/lib/rpc";
+import { RAW_TEXT_INPUT } from "@/lib/text-input";
 import { cn } from "@/lib/utils";
 import { cardRefSlug, stripCardRefs } from "../shared/card-refs";
 import type {
@@ -130,9 +131,12 @@ const OPTION_ICONS: Record<string, IconSvgElement> = {
 	advanced: RocketIcon,
 };
 
-// The reading column inside the content pane. Header, feed, and composer all
-// line up on it so the page has one left edge.
-const COLUMN = "mx-auto w-full max-w-[52rem] px-8";
+// The reading column inside the content pane. Header, feed, panels and key bar
+// all line up on it, so the page has one left edge — and when the margin opens
+// they all move together. The geometry is in `.reading-column` (index.css),
+// driven by the shell's data-margin; nothing here may go back to `mx-auto`,
+// which would centre each row over its own margin instead of beside it.
+const COLUMN = "reading-column px-8";
 
 interface TurnOptions {
 	highlightNew?: boolean;
@@ -1163,6 +1167,7 @@ export default function App() {
 										: "e.g. Kubernetes, from the basics"
 								}
 								className="h-15 rounded-3xl border-border bg-card pr-28 pl-5 text-lg shadow-md"
+								{...RAW_TEXT_INPUT}
 							/>
 							<Button
 								type="submit"
@@ -1320,7 +1325,19 @@ export default function App() {
 					onCollapse={() => setSidebarOpen(false)}
 				/>
 			)}
-			<main className="flex min-w-0 flex-1 flex-col">
+			{/* What is pinned beside the lesson decides the whole pane's geometry,
+			    not just the feed's — so it is declared here, above the header, the
+			    feed and the key bar alike. */}
+			<main
+				className="lesson-shell flex min-w-0 flex-1 flex-col"
+				data-margin={
+					threads.length > 0
+						? "threads"
+						: stickies.length > 0
+							? "notes"
+							: undefined
+				}
+			>
 				{/* Title and tabs share one row: the tabs sitting beside the title
 				    rather than under it gives the feed back a band of height. */}
 				<header className="shrink-0 border-b border-border/70 bg-background">
@@ -1382,17 +1399,7 @@ export default function App() {
 						</TabsContent>
 						<TabsContent
 							value="lesson"
-							// What is in the margin decides how much width the column
-							// gives up for it: a note is a scrap of paper, a thread is a
-							// conversation and needs room to be one.
-							data-margin={
-								threads.length > 0
-									? "threads"
-									: stickies.length > 0
-										? "notes"
-										: undefined
-							}
-							className="feed-column px-8 pt-7 text-base"
+							className="reading-column feed-column px-8 pt-7 text-base"
 						>
 							<MarginLayer
 								items={marginItems}
@@ -1796,6 +1803,7 @@ export default function App() {
 									value={input}
 									onChange={(event) => setInput(event.target.value)}
 									placeholder="What else would you like to know?"
+									{...RAW_TEXT_INPUT}
 									className="h-12 rounded-2xl border-border bg-card px-4 shadow-xs"
 									disabled={loading}
 								/>

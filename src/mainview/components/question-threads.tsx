@@ -14,6 +14,7 @@ import {
 import Markdown from "react-markdown";
 import type { MarginAnchor } from "@/components/margin-layer";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RAW_TEXT_INPUT } from "@/lib/text-input";
 import { cn } from "@/lib/utils";
 import { stripCardRefs } from "../../shared/card-refs";
 import type { ThreadMessage } from "../../shared/types";
@@ -196,6 +197,7 @@ export function ThreadCard({
 					value={draft}
 					placeholder="Ask about this…"
 					className="thread__input"
+					{...RAW_TEXT_INPUT}
 					onChange={(event) => {
 						const el = event.currentTarget;
 						el.style.height = "auto";

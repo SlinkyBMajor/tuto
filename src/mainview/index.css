@@ -601,47 +601,69 @@ ol[data-segment].segment-active {
 
 /* ------------------------------------------------------------- the margin */
 
-/* The feed column shares its left edge with the header and the key bar — the
-   app has one left edge (see COLUMN in App.tsx) — but it is the only one that
-   gives up width on the right, and only once a lesson has something to put
-   there. The margin-left below is what `mx-auto` computes for a 52rem column,
-   written out so it stays put when the width changes underneath it. */
-.feed-column {
+/* The geometry of the whole content pane, set once on the shell so the header,
+   the feed, the panels and the key bar all read the same numbers — the app has
+   one left edge, and it has to survive the margin opening.
+
+   Percentages in these custom properties are substituted textually and resolve
+   at the element that USES them, which is exactly what is wanted: every
+   consumer is the full width of the shell, so they all arrive at the same
+   answer without anything having to measure. */
+.lesson-shell {
 	--reading-max: 52rem;
 	/* Below this the passage stops being readable, so the margin is clipped
 	   instead — the window is the thing that has to give. */
 	--reading-min: 26rem;
-	/* What the column gives up, and how wide the margin is. Set by what is
-	   actually out there: a note is a scrap of paper and needs very little, a
-	   conversation needs enough width to be read as one. */
-	--margin-gutter: 12rem;
-	--margin-width: 11rem;
+	/* No margin: nothing is pinned beside the lesson yet */
+	--margin-gutter: 0rem;
+	--margin-width: 0rem;
 	/* A note stays note-sized even when a thread has widened the margin */
 	--sticky-width: 11rem;
-	/* What `mx-auto` computes for a 52rem column, written out so it stays put
-	   when the column's own width changes underneath it — and so the width
-	   below can subtract it. */
-	--column-left: max(0px, calc((100% - var(--reading-max)) / 2));
-	position: relative;
-	width: min(var(--reading-max), 100%);
-	margin-left: var(--column-left);
+
+	/* The column keeps its full reading width until the pane genuinely cannot
+	   hold it beside the margin. Only then does it start giving width up, and
+	   never below --reading-min. */
+	--column-width: min(
+		var(--reading-max),
+		max(var(--reading-min), 100% - var(--margin-gutter))
+	);
+	/* Centre the column AND its margin together, as one block. This is what
+	   makes the lesson SLIDE LEFT when a thread opens rather than being squeezed
+	   against a fixed left edge — the empty half of the window is spent before
+	   the passage is. */
+	--column-left: max(
+		0px,
+		calc((100% - var(--column-width) - var(--margin-gutter)) / 2)
+	);
 }
 
-.feed-column[data-margin="threads"] {
+.lesson-shell[data-margin="notes"] {
+	--margin-gutter: 12rem;
+	--margin-width: 11rem;
+}
+
+.lesson-shell[data-margin="threads"] {
 	--margin-gutter: 24rem;
 	--margin-width: 22rem;
 }
 
-/* The room the margin needs comes out of the column, and the column's own left
-   offset has to come out with it: the left edge is fixed to the header's, so
-   the space actually available on the right is the pane MINUS that offset.
-   Subtracting only the gutter leaves the margin hanging past the pane, which
-   the scroll pane then clips — a thread cut in half down its right side. */
-.feed-column[data-margin] {
-	width: min(
-		var(--reading-max),
-		max(var(--reading-min), 100% - var(--column-left) - var(--margin-gutter))
-	);
+/* ONE column for the whole content pane — header, feed, practice, notes, the
+   key bar. They each compute it from their own width, but they are all the same
+   width, so the app keeps its single left edge and the whole composition moves
+   together when the margin opens. Nothing here may be replaced by `mx-auto`:
+   centring the column alone would leave it centred over its own margin. */
+.reading-column {
+	width: var(--column-width);
+	margin-left: var(--column-left);
+	transition:
+		width 220ms ease,
+		margin-left 220ms ease;
+}
+
+/* The feed's own column: the reading column, plus the positioning context the
+   margin beside it is placed against. */
+.feed-column {
+	position: relative;
 }
 
 /* A window too narrow to hold the margin clips it rather than growing a

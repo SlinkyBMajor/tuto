@@ -33,7 +33,9 @@ Only one thread is open at a time. Opening one scrolls by exactly as much as it 
 
 **Notes and threads share one layer** (`MarginLayer`, extracted from what used to be `StickyLayer`). They are pinned to the same sections, so two columns would leave each with holes where the other's items are and a note would drift from its paragraph. Sorting them together is what keeps everything level with its own section. A note stays note-sized (`--sticky-width`) inside the wider margin a thread asks for.
 
-**The column gives up width for whichever is out there** — `data-margin="notes"` or `"threads"` on `.feed-column`, 12rem or 24rem. The width subtracts `--column-left` as well as the gutter: the column's left edge is fixed to the header's, so the room actually available on the right is the pane minus that offset. Subtracting only the gutter leaves the margin hanging past the pane, where the scroll pane clips it — a thread cut in half down its right side.
+**The lesson slides left; it is not squeezed.** `data-margin="notes"` or `"threads"` on the pane's shell picks a 12rem or 24rem gutter, and `.reading-column` centres *the column and its gutter together as one block*. So the empty half of the window is spent before the passage is: at a normal window size the cards keep their full 52rem and simply move left, and only a window too narrow to hold both starts taking width off the reading column (never below `--reading-min`, past which the margin is clipped instead).
+
+**The whole pane moves, not just the feed.** The header, the feed, the practice and notes panels and the key bar all carry `.reading-column` and compute the same numbers from their own width — they are all the width of the shell, so they agree without anything measuring. That is what keeps the app's one left edge intact while the margin opens, and it is why none of them may go back to `mx-auto`: centring a row on its own would centre it *over* its margin rather than beside it.
 
 ## The gutter marker
 

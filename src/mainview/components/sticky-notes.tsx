@@ -8,6 +8,7 @@ import {
 	useState,
 } from "react";
 import type { MarginAnchor } from "@/components/margin-layer";
+import { RAW_TEXT_INPUT } from "@/lib/text-input";
 import { cn } from "@/lib/utils";
 
 // The pool a new note picks from. Names, not values: the values are theme
@@ -130,6 +131,7 @@ export function StickyCard({
 				placeholder="Note…"
 				rows={1}
 				className="sticky-note__text"
+				{...RAW_TEXT_INPUT}
 				onChange={(event) => {
 					fit(event.currentTarget);
 					setDraft(event.target.value);
