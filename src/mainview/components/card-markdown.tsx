@@ -163,7 +163,7 @@ function PreBlock(props: { children?: ReactNode; markBlank?: boolean }) {
 	return <ShikiBlock source={source} lang={lang} markBlank={props.markBlank} />;
 }
 
-function CopyButton({ source }: { source: string }) {
+export function CopyButton({ source }: { source: string }) {
 	const [copied, setCopied] = useState(false);
 
 	useEffect(() => {

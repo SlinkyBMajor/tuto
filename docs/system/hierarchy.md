@@ -2,7 +2,7 @@
 
 Some subjects are a set of things that live inside one another — Pulumi's projects, stacks and resources; a Kubernetes cluster, node, pod, container. A learner meeting those one card at a time can know every word and still not be able to say which contains which, and that, not the definitions, is what they are missing. So a card that names a new rung can carry the whole picture with it.
 
-`Hierarchy` in `src/shared/types.ts`, the bar in `prompts/tutor.md` ("The hierarchy so far"), `parseHierarchy` in `src/bun/claude.ts`, `HierarchyNote` in `src/mainview/components/hierarchy.tsx`, and the `hierarchy` block of `index.css`.
+`Hierarchy` in `src/shared/types.ts`, the bar in `prompts/features/hierarchy.md` ("The hierarchy so far"), `parseHierarchy` in `src/bun/claude.ts`, `HierarchyNote` in `src/mainview/components/hierarchy.tsx`, and the `hierarchy` block of `index.css`.
 
 ## The shape
 

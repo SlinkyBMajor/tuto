@@ -7,13 +7,15 @@
 	"scripts": {
 		"start": "vite build && electrobun dev",
 		"dev": "concurrently \"pnpm run hmr\" \"vite build && TUTO_HMR=1 electrobun dev\"",
-		"hmr": "vite --port 5173",
+		"hmr": "vite --port 28173",
 		"build": "vite build && electrobun build",
 		"typecheck": "tsc --noEmit",
 		"smoke": "bun run scripts/tutor-smoke.ts",
 		"smoke:codebase": "bun run scripts/codebase-smoke.ts",
 		"smoke:exercise": "bun run scripts/exercise-smoke.ts",
+		"smoke:lab": "bun run scripts/lab-smoke.ts",
 		"smoke:prerequisite": "bun run scripts/prerequisite-smoke.ts",
+		"smoke:verify": "bun run scripts/verify-smoke.ts",
 		"test:parse": "bun run scripts/card-parse-test.ts",
 		"lint": "biome check .",
 		"format": "biome format --write ."

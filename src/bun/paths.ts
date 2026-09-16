@@ -34,3 +34,19 @@ export function makeLessonId(topic: string): string {
 	const stamp = new Date().toISOString().slice(0, 10);
 	return `${stamp}-${slugify(topic)}-${Math.random().toString(36).slice(2, 6)}`;
 }
+
+// Where a lab lesson's own files live. Deliberately NOT under the app data dir:
+// these are the learner's files — a Dockerfile they wrote, a config they
+// edited — and they belong somewhere a person opens in Finder and an editor,
+// not inside Application Support. The root is a Settings field.
+export const DEFAULT_LAB_ROOT = "~/Documents/Tuto Labs";
+
+function expandHome(path: string): string {
+	const home = process.env.HOME ?? ".";
+	if (path === "~") return home;
+	return path.startsWith("~/") ? `${home}/${path.slice(2)}` : path;
+}
+
+export function labDir(root: string, lessonId: string): string {
+	return `${expandHome(root.trim() || DEFAULT_LAB_ROOT)}/${lessonId}`;
+}

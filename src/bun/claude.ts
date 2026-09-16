@@ -3,24 +3,40 @@ import exerciseCheckPrompt from "../../prompts/exercise-check.md";
 import exerciseRegenPrompt from "../../prompts/exercise-regen.md";
 import explainPrompt from "../../prompts/explain.md";
 import mermaidFixPrompt from "../../prompts/mermaid-fix.md";
+import verifyCheckPrompt from "../../prompts/verify-check.md";
 import type {
 	Card,
+	CardFeatureId,
+	CardTask,
+	CardVerify,
 	Exercise,
 	Hierarchy,
 	HierarchyLevel,
 	OutlineItem,
 	Prerequisite,
+	Requirement,
+	RequirementKind,
 	ThreadMessage,
 } from "../shared/types";
+import { ALL_CARD_FEATURES, applyCardFeatures } from "./card-features";
+import { isAllowed, type VerifyRun } from "./verify";
 
-// How a lesson's turns are executed. Built once per lesson from its mode (see
-// lesson-modes.ts) and passed to every turn of that lesson, so this file knows
-// how to run the CLI without knowing what kinds of lesson exist.
+// The CLI's `--effort` levels, cheapest first. Effort buys thinking, not a
+// bigger model: the tier is a separate decision, made by the mode.
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+// How one turn of a lesson is executed. Built from its mode (see
+// lesson-modes.ts) and passed to the turn, so this file knows how to run the
+// CLI without knowing what kinds of lesson exist.
 export interface TutorRuntime {
 	// The full system prompt: core tutor instructions plus the mode's section
 	systemPrompt: string;
 	// Built-in CLI tools the tutor may use; empty disables all of them
 	tools: readonly string[];
+	// What a card of this lesson may carry. Prompt sections come from the same
+	// list, so this is also what the tutor was told it could use — see
+	// card-features.ts.
+	cardFeatures: readonly CardFeatureId[];
 	// Working directory for the CLI — the project root when the lesson teaches
 	// from one, so relative paths in the tutor's citations mean something
 	cwd?: string;
@@ -28,9 +44,12 @@ export interface TutorRuntime {
 	// codebase needs far longer than one answered from the model's own
 	// knowledge, so this is per-mode rather than a global constant.
 	timeoutMs: number;
-	// Pinned per mode, so a lesson costs what the mode says it costs instead of
-	// following whatever model this machine happens to default to
+	// From Settings, the same for every mode, so a lesson costs what the
+	// learner chose instead of following whatever this machine defaults to
 	model?: string;
+	// How hard the model works on this turn. Comes from Settings with the
+	// model, and the floor is "high" — see settings.ts for what `low` did.
+	effort?: EffortLevel;
 	// Hard ceiling for one turn — a backstop against a turn that reads forever,
 	// not a budget the tutor is meant to work within
 	maxBudgetUsd?: number;
@@ -281,6 +300,7 @@ function tutorArgs(
 	}
 	args.push(...HERMETIC_ARGS);
 	if (runtime.model) args.push("--model", runtime.model);
+	if (runtime.effort) args.push("--effort", runtime.effort);
 	if (runtime.maxBudgetUsd) {
 		args.push("--max-budget-usd", String(runtime.maxBudgetUsd));
 	}
@@ -311,7 +331,7 @@ export async function runTutorTurn(
 	});
 	try {
 		return {
-			...parseReply(turn.result),
+			...parseReply(turn.result, runtime.cardFeatures),
 			sessionId: turn.sessionId,
 			cost: turn.cost,
 		};
@@ -355,7 +375,7 @@ async function repairCard(
 		);
 		try {
 			return {
-				...parseReply(turn.result),
+				...parseReply(turn.result, runtime.cardFeatures),
 				sessionId: turn.sessionId,
 				cost: turn.cost,
 			};
@@ -375,7 +395,12 @@ async function repairCard(
 		console.warn(
 			"card unparseable after repairs; salvaged title and body from the raw reply",
 		);
-		return { card: salvaged, sessionId };
+		// A salvaged card goes through the same gate as a parsed one: it can
+		// carry a takeaway, and a mode without that feature must not get one.
+		return {
+			card: applyCardFeatures(salvaged, runtime.cardFeatures),
+			sessionId,
+		};
 	}
 	// Nothing recoverable — not even a title and body. Log the reply in full;
 	// it is the only copy of what was taught, and the turn surfaces as an error.
@@ -425,7 +450,7 @@ export async function runTutorTurnStreaming(
 	);
 	try {
 		return {
-			...parseReply(turn.result),
+			...parseReply(turn.result, runtime.cardFeatures),
 			sessionId: turn.sessionId,
 			cost: turn.cost,
 		};
@@ -587,6 +612,23 @@ function lastToolUse(content: unknown): ToolUse | undefined {
 // One short line about a lookup in progress, for the streaming card. Paths come
 // back absolute; inside a project they read better cut down to the part the
 // learner would recognise.
+// A search query is cut from the END, unlike a file path, which is cut from the
+// front — a path's meaning is its filename and a query's is its first few words.
+function head(query: string): string {
+	const text = query.trim();
+	return text.length > 60 ? `${text.slice(0, 59)}…` : text;
+}
+
+// A page being read is named by its site, not its full URL: the line sits in
+// one row of the planning screen, and a documentation URL is mostly path.
+function hostOf(url: string): string {
+	try {
+		return new URL(url).host.replace(/^www\./, "");
+	} catch {
+		return url.slice(0, 60);
+	}
+}
+
 function describeToolUse(use: ToolUse, cwd?: string): string {
 	const relative = (value: unknown): string => {
 		const text = typeof value === "string" ? value : "";
@@ -603,8 +645,19 @@ function describeToolUse(use: ToolUse, cwd?: string): string {
 			return pattern ? `Searching for ${pattern}` : "Searching the project";
 		case "Glob":
 			return pattern ? `Looking for ${pattern}` : "Looking through the files";
+		// A lab lesson looks things up on the web, and the line the learner
+		// watches has to say so — "Looking through the project" during a Grafana
+		// lesson names a project that does not exist.
+		case "WebSearch":
+			return typeof use.input.query === "string"
+				? `Searching the web for ${head(use.input.query)}`
+				: "Searching the web";
+		case "WebFetch":
+			return typeof use.input.url === "string"
+				? `Reading ${hostOf(use.input.url)}`
+				: "Reading a page";
 		default:
-			return "Looking through the project";
+			return "Looking something up";
 	}
 }
 
@@ -741,7 +794,10 @@ export async function discussSection(input: {
 		discussPrompt,
 		[
 			`Lesson topic: ${input.topic}`,
-			`The lesson so far:\n\n${input.material}`,
+			// Labelled as context rather than as the answer set: handed a block
+			// of material and a question, a model reads it as "answer from this"
+			// and starts declining anything the material is silent about.
+			`What the learner has read so far — their context and their vocabulary, not the limit of what you may say:\n\n${input.material}`,
 			`The card the learner is on: ${input.cardTitle}`,
 			`The section they stopped on:\n\n${input.section}`,
 			conversation ? `Earlier in this conversation:\n\n${conversation}` : "",
@@ -845,6 +901,37 @@ export async function checkExerciseAnswer(
 // or impossible. `material` is the lesson text the new exercise has to be
 // answerable from — the webview holds the cards, so it sends them rather than
 // this process guessing which ones taught the concept.
+// Did the step work? A judgement handed the expected answer, exactly like
+// grading an exercise — which is why it belongs on the cheap tier with the
+// other side-calls. About a cent.
+export async function judgeVerify(
+	run: VerifyRun,
+	expect: string,
+	taskExpect?: string,
+): Promise<{ pass: boolean; note: string }> {
+	const asked = taskExpect
+		? `What the learner was asked to do, and what the card said they would see: ${taskExpect}`
+		: "The card did not say what the learner would see.";
+	const { result } = await runSideCall(
+		verifyCheckPrompt,
+		[
+			asked,
+			`What the tutor said this check's output should show: ${expect}`,
+			`Command the app ran: ${run.command}`,
+			`Exit code: ${run.exitCode}`,
+			`Output:\n${run.output || "(nothing at all)"}`,
+		].join("\n\n"),
+	);
+	const { pass, note } = readJsonObject(result, "verify") as {
+		pass?: unknown;
+		note?: unknown;
+	};
+	if (typeof pass !== "boolean" || typeof note !== "string") {
+		throw new Error(`verify reply malformed: ${result.slice(0, 200)}`);
+	}
+	return { pass, note };
+}
+
 export async function regenerateExercise(
 	previous: Exercise,
 	material: string,
@@ -936,7 +1023,13 @@ function readJsonObject(result: string, label: string): unknown {
 
 // The tutor is instructed to reply with bare JSON, but models occasionally
 // wrap it in code fences or stray prose — extract the outermost object.
-export function parseReply(text: string): {
+export function parseReply(
+	text: string,
+	// What this lesson's mode allows a card to carry. Anything else is dropped
+	// here rather than trusted to the prompt. Defaults to everything, which is
+	// what a caller with no lesson in hand (the parse tests) wants.
+	features: readonly CardFeatureId[] = ALL_CARD_FEATURES,
+): {
 	card: Card;
 	outline?: OutlineItem[];
 	exercise?: Exercise;
@@ -987,36 +1080,125 @@ export function parseReply(text: string): {
 		);
 	}
 	return {
-		card: {
-			type: card.type,
-			title: card.title,
-			body: card.body,
-			conceptId:
-				typeof card.conceptId === "string" ? card.conceptId : undefined,
-			takeaway: parseTakeaway(card.takeaway),
-			hierarchy: parseHierarchy(card.hierarchy),
-			options: parseOptions(card.options),
-			// Honoured only on the card it belongs to. Taking the offer throws
-			// this lesson away and starts another, which is the right thing under
-			// an unanswered level question and destructive anywhere else.
-			prerequisite:
-				card.type === "question"
-					? parsePrerequisite(card.prerequisite)
-					: undefined,
-			suggestions: parseSuggestions(card.suggestions),
-			notes: parseNotes(card.notes),
-		},
+		card: applyCardFeatures(
+			{
+				type: card.type,
+				title: card.title,
+				body: card.body,
+				conceptId:
+					typeof card.conceptId === "string" ? card.conceptId : undefined,
+				takeaway: parseLine(card.takeaway),
+				hierarchy: parseHierarchy(card.hierarchy),
+				options: parseOptions(card.options),
+				// Honoured only on the card it belongs to. Taking the offer throws
+				// this lesson away and starts another, which is the right thing under
+				// an unanswered level question and destructive anywhere else.
+				prerequisite:
+					card.type === "question"
+						? parsePrerequisite(card.prerequisite)
+						: undefined,
+				suggestions: parseSuggestions(card.suggestions),
+				task: parseTask(card.task),
+				caution: parseLine(card.caution),
+				cost: parseLine(card.cost),
+				requirements: parseRequirements(card.requirements),
+				notes: parseNotes(card.notes),
+			},
+			features,
+		),
 		outline: parseOutline(parsed.outline),
 		exercise: parseExercise(parsed.exercise),
 	};
 }
 
-// The one line worth keeping from a card. Optional by design — most cards have
-// none — so anything that isn't usable text is dropped rather than surfaced as
-// an empty panel under the card.
-function parseTakeaway(raw: unknown): string | undefined {
+// One line of model text the app draws as a panel of its own: the takeaway, and
+// a lab card's caution and cost. All three are optional by design — most cards
+// carry none — so anything that isn't usable text is dropped rather than
+// surfaced as an empty panel under the card.
+function parseLine(raw: unknown): string | undefined {
 	if (typeof raw !== "string") return undefined;
 	return raw.trim() || undefined;
+}
+
+const TASK_KINDS = new Set<CardTask["kind"]>(["run", "ui", "edit"]);
+
+// The step the learner performs. A "run" task with nothing to type is not a
+// task — the card would tell the learner to run something and show no command —
+// so it is dropped, and the body still teaches on its own. What success looks
+// like is kept when it is there and simply not drawn when it is not.
+function parseTask(raw: unknown): CardTask | undefined {
+	const value = raw as
+		| { kind?: unknown; command?: unknown; expect?: unknown }
+		| null
+		| undefined;
+	if (!value || typeof value !== "object") return undefined;
+	const kind = value.kind as CardTask["kind"];
+	if (!TASK_KINDS.has(kind)) return undefined;
+	const command = parseLine(value.command);
+	if (kind === "run" && !command) return undefined;
+	return {
+		kind,
+		command,
+		expect: parseLine(value.expect),
+		verify: parseVerify((value as { verify?: unknown }).verify),
+	};
+}
+
+// The app-side allowlist runs HERE, at parse time, so a check this app will not
+// run never reaches the learner at all: the card simply has no Check button and
+// falls back to "I did it". A refusal must never surface as an error, and never
+// as a question about whether to permit it — see
+// docs/adr/0001-the-learner-executes-the-app-only-verifies.md.
+function parseVerify(raw: unknown): CardVerify | undefined {
+	const value = raw as { argv?: unknown; expect?: unknown } | null | undefined;
+	if (!value || !Array.isArray(value.argv)) return undefined;
+	const argv = value.argv.filter(
+		(part): part is string => typeof part === "string" && part.length > 0,
+	);
+	if (argv.length !== value.argv.length || !isAllowed(argv)) return undefined;
+	const expect = parseLine(value.expect);
+	// A check with nothing to judge it against is not a check: the judge is
+	// handed the expectation, and without one it would be inventing a standard.
+	return expect ? { argv, expect } : undefined;
+}
+
+const REQUIREMENT_KINDS = new Set<RequirementKind>([
+	"install",
+	"account",
+	"payment",
+	"disk",
+	"time",
+	"workspace",
+]);
+
+// The most a checklist can hold and still be read before the lesson starts
+const MAX_REQUIREMENTS = 8;
+
+// What the learner needs before the setup begins. A row needs a name and a kind
+// the app has an icon for; an unknown kind would draw a blank tile, and the
+// point of this panel is that it is skimmable.
+function parseRequirements(raw: unknown): Requirement[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const rows: Requirement[] = [];
+	for (const item of raw) {
+		const value = item as {
+			name?: unknown;
+			kind?: unknown;
+			detail?: unknown;
+			cost?: unknown;
+		};
+		const name = parseLine(value?.name);
+		const kind = value?.kind as RequirementKind;
+		if (!name || !REQUIREMENT_KINDS.has(kind)) continue;
+		rows.push({
+			name,
+			kind,
+			detail: parseLine(value.detail),
+			cost: parseLine(value.cost),
+		});
+		if (rows.length === MAX_REQUIREMENTS) break;
+	}
+	return rows.length > 0 ? rows : undefined;
 }
 
 // The most rungs a picture of this kind can carry before it stops being one

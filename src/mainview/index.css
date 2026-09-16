@@ -350,11 +350,16 @@ html.font-xlarge {
 }
 
 /* Inline code as a chip. The typography plugin wraps it in literal
-   backticks by default, which read as a typo in a lesson card. The takeaway
-   panel is not prose (see below) but holds the same kind of name, so it shares
-   the recipe rather than growing a second one that drifts. */
+   backticks by default, which read as a typo in a lesson card. The panels
+   under a card are not prose (see below) but hold the same kind of name — a
+   command, a context, a container — so they share the recipe rather than
+   growing several that drift apart. */
 .prose :where(code):not(pre code),
-.takeaway__text :where(code) {
+.takeaway__text :where(code),
+.caution__text :where(code),
+.cost__text :where(code),
+.task__expect :where(code),
+.machine-notice__list :where(code) {
 	font-family: var(--font-mono);
 	font-size: 0.82em;
 	font-weight: 500;
@@ -368,7 +373,15 @@ html.font-xlarge {
 .prose :where(code)::before,
 .prose :where(code)::after,
 .takeaway__text :where(code)::before,
-.takeaway__text :where(code)::after {
+.takeaway__text :where(code)::after,
+.caution__text :where(code)::before,
+.caution__text :where(code)::after,
+.cost__text :where(code)::before,
+.cost__text :where(code)::after,
+.task__expect :where(code)::before,
+.task__expect :where(code)::after,
+.machine-notice__list :where(code)::before,
+.machine-notice__list :where(code)::after {
 	content: none;
 }
 
@@ -643,13 +656,33 @@ ol[data-segment].segment-active {
 		var(--reading-max),
 		max(var(--reading-min), 100% - var(--margin-gutter))
 	);
-	/* Centre the column AND its margin together, as one block. This is what
-	   makes the lesson SLIDE LEFT when a thread opens rather than being squeezed
-	   against a fixed left edge — the empty half of the window is spent before
-	   the passage is. */
+	/* How far right of centring-the-block the column sits. Reading is the
+	   default, and while reading the LESSON has the focus, so it sits where a
+	   page sits: centred on the pane, with the margin hanging off its right.
+	   Half the gutter is exactly what undoes centring the two together. */
+	--column-shift: calc(var(--margin-gutter) / 2);
+
+	/* Centring the column AND its margin together as one block is the other
+	   end of the move — it is where the column lands when a thread opens and
+	   --column-shift goes to zero. The empty half of the pane is spent before
+	   the passage is, so the lesson travels the whole way rather than being
+	   squeezed against a fixed left edge.
+
+	   Clamped at both ends: never left of the pane, and never so far right that
+	   the margin hangs off it. That upper limit is what makes the reading
+	   position degrade — on a pane too narrow to centre the lesson AND keep the
+	   margin on screen, the column gives up as much of the middle as it must
+	   and no more. */
 	--column-left: max(
 		0px,
-		calc((100% - var(--column-width) - var(--margin-gutter)) / 2)
+		min(
+			calc(
+				(100% - var(--column-width) - var(--margin-gutter)) /
+				2 +
+				var(--column-shift)
+			),
+			calc(100% - var(--column-width) - var(--margin-gutter))
+		)
 	);
 }
 
@@ -663,6 +696,22 @@ ol[data-segment].segment-active {
 	--margin-width: 22rem;
 }
 
+/* A thread is OPEN. Talking is not reading, so the conversation stops being
+   something pinned NEXT TO the lesson and becomes the thing being used: the
+   margin grows to a third of the pane and its type grows with it (see
+   .thread[data-open] below).
+
+   The move comes from --column-shift dropping to zero, not from the gutter.
+   The column stops centring on the pane and centres together with its margin
+   instead, which on any roomy pane drops it well left of where it read — far
+   more than widening a gutter could, since a gutter only ever moves the column
+   by half of what it grows. */
+.lesson-shell[data-margin="thread-open"] {
+	--margin-gutter: 36rem;
+	--margin-width: 34rem;
+	--column-shift: 0rem;
+}
+
 /* ONE column for the whole content pane — header, feed, practice, notes, the
    key bar. They each compute it from their own width, but they are all the same
    width, so the app keeps its single left edge and the whole composition moves
@@ -671,15 +720,33 @@ ol[data-segment].segment-active {
 .reading-column {
 	width: var(--column-width);
 	margin-left: var(--column-left);
+	/* Longer and softer than a normal state change, because the distance is
+	   real now — the lesson crosses a good part of the pane between reading and
+	   talking, and at 220ms linear-ish that reads as a jump. */
 	transition:
-		width 220ms ease,
-		margin-left 220ms ease;
+		width 320ms cubic-bezier(0.22, 0.61, 0.36, 1),
+		margin-left 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 /* The feed's own column: the reading column, plus the positioning context the
    margin beside it is placed against. */
 .feed-column {
 	position: relative;
+}
+
+/* The cards, without the margin beside them — the margin is a sibling inside
+   .feed-column, so this is the only handle that can dim the lesson and leave
+   the conversation lit. */
+.feed-list {
+	transition: opacity 220ms ease;
+}
+
+/* Faint on purpose. The lesson sliding out of the way is what says the
+   conversation has the floor; this only stops the cards competing with it, and
+   the passage the question is about has to stay readable a few centimetres to
+   the left of the answer. */
+[data-margin="thread-open"] .feed-list {
+	opacity: 0.85;
 }
 
 /* A window too narrow to hold the margin clips it rather than growing a
@@ -701,6 +768,11 @@ ol[data-segment].segment-active {
 	height: 100%;
 	margin-left: 0.75rem;
 	pointer-events: none;
+	/* Grows with the lesson's slide rather than snapping ahead of it — same
+	   duration and curve as .reading-column so the two read as one movement.
+	   Each item reflows as it widens, which MarginLayer's ResizeObserver picks
+	   up, so the stack stays sorted the whole way through. */
+	transition: width 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .margin-item {
@@ -806,6 +878,476 @@ ol[data-segment].segment-active {
 	height: 0.3rem;
 	border-radius: 999px;
 	background: var(--marker);
+}
+
+/* ------------------------------------------------------- feed notifications */
+
+/* The app saying one thing in the feed: a practice item added, a folder made.
+   A line of chrome rather than a card — it is the app talking, not more of the
+   lesson, and it must not look like something to study. Indented to the card's
+   own text edge so it hangs off the card above it. */
+.feed-note {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	width: fit-content;
+	max-width: 100%;
+	margin: -0.35rem 1.5rem 0;
+	padding: 0.3rem 0.7rem 0.3rem 0.55rem;
+	border-radius: 999px;
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+	color: var(--muted-foreground);
+	font-size: 0.8rem;
+	line-height: 1.4;
+	text-align: left;
+}
+
+.feed-note--action {
+	cursor: pointer;
+	transition:
+		color 160ms ease,
+		box-shadow 160ms ease;
+}
+
+.feed-note--action:hover {
+	color: var(--foreground);
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--marker) 35%, transparent);
+}
+
+/* ------------------------------------------------------------ lab panels */
+
+/* What a lab card carries under its body: the step to perform, and the two
+   things the learner must not be able to skim past — a caution and a cost.
+   Each is a reading section of its own, so the arrow keys, the question rail
+   and the sticky notes all reach them with no new wiring.
+
+   They share the takeaway's geometry exactly: inset to the card's own padding
+   so the left edge lands under the card's TEXT, which also puts their reading
+   bars in the same gutter column as the body's. */
+.task,
+.caution,
+.cost,
+.requirements {
+	position: relative;
+	margin: 0.55rem 1.5rem 0;
+	padding: 0.65rem 1.1rem 0.85rem;
+	border-radius: var(--radius-xl);
+	transition:
+		opacity 220ms ease,
+		box-shadow 220ms ease,
+		background 220ms ease;
+}
+
+/* The step. Marker-accented, because the marker is the colour of what you are
+   DOING inside the content, and on a lab card this is the one thing to do —
+   the card teaches, and then this asks for the learner's hands. */
+.task {
+	background: color-mix(in oklch, var(--marker) 6%, var(--card));
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--marker) 22%, transparent);
+}
+
+.task.segment-active {
+	box-shadow:
+		inset 0 0 0 1.5px color-mix(in oklch, var(--marker) 45%, transparent),
+		var(--shadow-sm);
+}
+
+/* Done: it stops being the thing to do and becomes part of the record. The
+   accent drops away rather than turning green — a finished step is history,
+   and the lesson has moved the marker on. */
+.task.is-done {
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.task__bar {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin-bottom: 0.35rem;
+}
+
+/* Takes the slack, so the tick and Copy sit at the right edge */
+.task__label {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: 0.35rem;
+	color: var(--marker);
+	font-size: 0.74rem;
+	font-weight: 600;
+}
+
+.task.is-done .task__label {
+	color: var(--muted-foreground);
+}
+
+.task__done {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	color: var(--success);
+	font-size: 0.74rem;
+	font-weight: 600;
+}
+
+/* The scroll lives here and not on the panel: an element carrying
+   [data-segment] may not set overflow, or it clips its own reading bar. */
+.task__command {
+	margin: 0;
+	padding: 0.7rem 0.9rem;
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+	/* An edge of its own: the panel around it is already tinted, and without
+	   this the block of the command dissolves into it on a light theme. */
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--marker) 15%, transparent);
+	font-family: var(--font-mono);
+	font-size: calc(0.85rem * var(--reading-scale));
+	line-height: 1.6;
+	white-space: pre;
+	overflow-x: auto;
+}
+
+.task.is-done .task__command {
+	background: color-mix(in oklch, var(--foreground) 5%, transparent);
+}
+
+/* The expectation is one line of the tutor's prose and can name a command, so
+   it goes through markdown like the other panels — and the paragraph markdown
+   wraps it in runs on from the label rather than dropping below it. */
+.task__expect :where(p) {
+	display: inline;
+	margin: 0;
+}
+
+.task__expect {
+	margin: 0.6rem 0 0;
+	font-family: var(--font-reading);
+	font-size: calc(0.92rem * var(--reading-scale));
+	line-height: 1.5;
+	color: var(--muted-foreground);
+	text-wrap: pretty;
+}
+
+.task__expect-label {
+	font-weight: 600;
+	color: var(--foreground);
+}
+
+.task__expect-label::after {
+	content: " — ";
+	font-weight: 400;
+	color: var(--muted-foreground);
+}
+
+/* A step that could touch something outside this lesson. Red, not the
+   takeaway's yellow: yellow already means "keep this", and a warning that can
+   be mistaken for a keepsake is not a warning. */
+.caution {
+	background: color-mix(in oklch, var(--destructive) 7%, var(--card));
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--destructive) 25%, transparent);
+}
+
+.caution.segment-active {
+	box-shadow:
+		inset 0 0 0 1.5px color-mix(in oklch, var(--destructive) 50%, transparent),
+		var(--shadow-sm);
+}
+
+.caution__label {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-bottom: 0.3rem;
+	color: var(--destructive);
+	font-size: 0.74rem;
+	font-weight: 600;
+}
+
+/* Money. A neutral well rather than a third colour — the coin and the label
+   carry it, and the words in it are the part that matters. */
+.cost,
+.requirements {
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.cost.segment-active,
+.requirements.segment-active {
+	box-shadow:
+		inset 0 0 0 1.5px color-mix(in oklch, var(--foreground) 22%, transparent),
+		var(--shadow-sm);
+}
+
+.cost__label,
+.requirements__label {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-bottom: 0.4rem;
+	color: var(--muted-foreground);
+	font-size: 0.74rem;
+	font-weight: 600;
+}
+
+/* Not prose: one or two sentences, in the reading font, a shade under the body
+   size — the same treatment the takeaway gets, without the yellow. */
+.caution__text,
+.cost__text {
+	font-family: var(--font-reading);
+	font-size: calc(0.98rem * var(--reading-scale));
+	line-height: 1.5;
+	color: var(--foreground);
+	text-wrap: pretty;
+}
+
+.caution__text :where(p + p),
+.cost__text :where(p + p) {
+	margin-top: 0.5em;
+}
+
+/* The checklist on the plan card: what the lesson needs before it starts. One
+   row per thing, its kind drawn as an icon so the list is scannable rather
+   than read, and the money on the right where a badge belongs. */
+.requirements__list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	font-family: var(--font-reading);
+}
+
+.requirements__row {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	font-size: calc(0.92rem * var(--reading-scale));
+	line-height: 1.4;
+}
+
+.requirements__icon {
+	display: grid;
+	place-items: center;
+	flex-shrink: 0;
+	width: 1.65rem;
+	height: 1.65rem;
+	border-radius: var(--radius-md);
+	background: var(--card);
+	box-shadow: inset 0 0 0 1px var(--border);
+	color: var(--muted-foreground);
+}
+
+.requirements__body {
+	display: flex;
+	min-width: 0;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.1rem 0.45rem;
+}
+
+.requirements__name {
+	font-weight: 600;
+	color: var(--foreground);
+}
+
+.requirements__detail {
+	color: var(--muted-foreground);
+}
+
+.requirements__cost {
+	flex-shrink: 0;
+	padding: 0.1rem 0.5rem;
+	border-radius: 999px;
+	background: var(--card);
+	box-shadow: inset 0 0 0 1px var(--border);
+	color: var(--muted-foreground);
+	font-family: var(--font-sans);
+	font-size: 0.72rem;
+	font-weight: 600;
+}
+
+/* A step whose check came back wrong. It keeps the task panel's shape — this
+   is still the step — but loses the marker: the learner is not standing on a
+   command to run any more, they are standing on an answer that disagrees. */
+.task.is-failed {
+	background: color-mix(in oklch, var(--destructive) 6%, var(--card));
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--destructive) 22%, transparent);
+}
+
+.task.is-failed .task__label {
+	color: var(--destructive);
+}
+
+/* What the check found. The command and its output are behind a disclosure,
+   because the note is the answer and the output is the evidence — but the
+   evidence is always there, because the app just ran something on somebody
+   else's machine and owes them the receipt. */
+.check {
+	margin-top: 0.7rem;
+	padding-top: 0.65rem;
+	border-top: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.check--failed {
+	border-top-color: color-mix(in oklch, var(--destructive) 20%, transparent);
+}
+
+.check__note {
+	font-family: var(--font-reading);
+	font-size: calc(0.95rem * var(--reading-scale));
+	line-height: 1.5;
+	color: var(--foreground);
+	text-wrap: pretty;
+}
+
+.check__details {
+	margin-top: 0.45rem;
+}
+
+.check__details summary {
+	cursor: pointer;
+	color: var(--muted-foreground);
+	font-size: 0.78rem;
+	list-style: none;
+}
+
+.check__details summary::-webkit-details-marker {
+	display: none;
+}
+
+.check__details summary::before {
+	content: "▸ ";
+	color: var(--muted-foreground);
+}
+
+.check__details[open] summary::before {
+	content: "▾ ";
+}
+
+.check__output {
+	margin: 0.4rem 0 0;
+	padding: 0.6rem 0.8rem;
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+	font-family: var(--font-mono);
+	font-size: calc(0.78rem * var(--reading-scale));
+	line-height: 1.55;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 14rem;
+	overflow-y: auto;
+	color: var(--muted-foreground);
+}
+
+/* The one thing this mode asks permission for. A quiet row rather than a
+   dialog: it is a yes/no about read-only commands, not a warning. */
+.consent {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	margin-top: 0.7rem;
+	padding-top: 0.65rem;
+	border-top: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.consent__text {
+	flex: 1;
+	min-width: 14rem;
+	font-size: 0.82rem;
+	line-height: 1.5;
+	color: var(--muted-foreground);
+	text-wrap: pretty;
+}
+
+/* The command named in either place, set in the same monospace as the block it
+   refers to. `:where` on the containers so both land at the same specificity —
+   as two selectors of different weight they are a descending-specificity pair,
+   which is a real ordering hazard and the linter is right to say so. */
+:where(.check__details summary, .consent__text) code {
+	font-family: var(--font-mono);
+	font-size: 0.78rem;
+}
+
+.consent__actions {
+	display: flex;
+	gap: 0.35rem;
+}
+
+/* --------------------------------------------------- the machine notice */
+
+/* Written by the app, not the tutor, and shown before the lesson says a word:
+   this Mac is pointed at a real cluster, or a cloud CLI is logged in. A full
+   panel rather than an inset one, because it belongs to no card — and it is
+   the app's own voice, which is why it says plainly what was read and what
+   will not be run. */
+.machine-notice {
+	padding: 1.05rem 1.25rem 1.1rem;
+	border-radius: var(--radius-2xl);
+	background: color-mix(in oklch, var(--destructive) 6%, var(--card));
+	box-shadow: inset 0 0 0 1px
+		color-mix(in oklch, var(--destructive) 22%, transparent);
+}
+
+.machine-notice__label--second {
+	margin-top: 0.8rem;
+}
+
+.machine-notice__label {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-bottom: 0.5rem;
+	color: var(--destructive);
+	font-size: 0.8rem;
+	font-weight: 600;
+}
+
+.machine-notice__list :where(p) {
+	margin: 0;
+}
+
+.machine-notice__list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	font-family: var(--font-reading);
+	font-size: calc(0.98rem * var(--reading-scale));
+	line-height: 1.5;
+	color: var(--foreground);
+	text-wrap: pretty;
+}
+
+.machine-notice__foot {
+	margin-top: 0.75rem;
+	padding-top: 0.7rem;
+	border-top: 1px solid color-mix(in oklch, var(--destructive) 18%, transparent);
+	font-size: 0.82rem;
+	line-height: 1.5;
+	color: var(--muted-foreground);
+}
+
+/* A resumed lesson with news but no risk: the same panel without the alarm.
+   After the rules it overrides, so specificity climbs rather than descends. */
+.machine-notice--quiet {
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.machine-notice--quiet .machine-notice__label {
+	color: var(--muted-foreground);
+}
+
+.machine-notice--quiet .machine-notice__foot {
+	border-top-color: var(--border);
 }
 
 /* ----------------------------------------------------------- sticky notes */
@@ -1213,6 +1755,49 @@ ol[data-segment].segment-active {
 
 .thread__discard:hover {
 	color: var(--destructive);
+}
+
+/* An OPEN thread is read, not glanced at, so it is set like something you
+   read: type just under the card's own 1.125rem, room to breathe around it,
+   and more height before the conversation starts scrolling. A closed preview
+   keeps its small type — that one IS a glance, a reminder of what was asked.
+
+   Last in the section: every rule here overrides one above it, and Biome's
+   noDescendingSpecificity wants the stronger selector to come second. */
+.thread[data-open] .thread__message,
+.thread[data-open] .thread__input {
+	font-size: 1.05rem;
+}
+
+.thread[data-open] .thread__log {
+	max-height: 30rem;
+	gap: 0.7rem;
+	padding: 0.9rem 1rem;
+}
+
+.thread[data-open] .thread__message--user {
+	padding: 0.4rem 0.7rem;
+}
+
+.thread[data-open] .thread__message--tutor pre {
+	font-size: 0.85rem;
+}
+
+.thread[data-open] .thread__about {
+	font-size: 0.8rem;
+}
+
+.thread[data-open] .thread__bar {
+	padding: 0.7rem 0.6rem 0.6rem 1rem;
+}
+
+.thread[data-open] .thread__composer {
+	padding: 0.6rem 0.65rem 0.65rem 1rem;
+}
+
+.thread[data-open] .thread__send {
+	width: 1.9rem;
+	height: 1.9rem;
 }
 
 @media (prefers-reduced-motion: reduce) {

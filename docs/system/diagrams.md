@@ -26,7 +26,7 @@ Measured `dist/` cost per type, each added individually to a `flowchart` + `sequ
 1. Add its chunk basename to `KEPT_DIAGRAMS` in `vite.config.ts`. The match is a prefix, so `stateDiagram` also catches `stateDiagram-v2`.
 2. Check whether it needs a layout engine beyond dagre, and add that to `KEPT_LAYOUTS`. **`buildEnd` cannot catch this** — it only proves the kept prefixes matched a chunk. `mindmap` is the trap: it resolves `cose-bilkent` through the layout registry at *render* time, so bundling it with dagre alone builds clean and then throws on the first diagram.
 3. Add the family's theme variables (below) — a type with none renders off-palette rather than failing.
-4. Name it in the Diagrams section of `prompts/tutor.md` and in the type list in `prompts/mermaid-fix.md`. The tutor will not emit a type it has not been told about, and the fixer needs to know which types it may rewrite into.
+4. Name it in the Diagrams section of `prompts/features/diagram.md` and in the type list in `prompts/mermaid-fix.md`. The tutor will not emit a type it has not been told about, and the fixer needs to know which types it may rewrite into.
 
 ## Theming
 
@@ -41,7 +41,7 @@ Diagrams do **not** re-render on a live light/dark switch: the render effect dep
 
 ## Highlighting the current step
 
-The tutor accents the one node a card is teaching with `classDef focus` plus `class <id> focus` (see `prompts/tutor.md`). It emits a fixed light-mode indigo, because a prompt cannot read a CSS variable; `withFocusStyle` then swaps that line for one built from the live `--diagram-accent` / `--diagram-accent-text` tokens before parsing.
+The tutor accents the one node a card is teaching with `classDef focus` plus `class <id> focus` (see `prompts/features/diagram.md`). It emits a fixed light-mode indigo, because a prompt cannot read a CSS variable; `withFocusStyle` then swaps that line for one built from the live `--diagram-accent` / `--diagram-accent-text` tokens before parsing.
 
 This is done in the diagram source rather than in CSS because **Mermaid inlines classDef styles scoped to the render id** — `#mmd… .focus>*{fill:…!important}`. That ID selector outranks any stylesheet rule the app could write, `!important` or not.
 

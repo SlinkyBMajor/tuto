@@ -250,3 +250,112 @@ export const DEMO_CARDS: Card[] = [
 		],
 	},
 ];
+
+// ?demolab — a hands-on lesson, for checking the lab panels without a model
+// call: the plan card's requirements, a task card, and the pair a step that
+// touches something real carries (a caution and a cost).
+export const DEMO_LAB_TOPIC = "Grafana, hands-on";
+
+export const DEMO_LAB_OUTLINE: OutlineItem[] = [
+	{ id: "setup", title: "Setup" },
+	{ id: "orientation", title: "What's Running" },
+	{ id: "data-sources", title: "Data Sources" },
+	{ id: "dashboards", title: "Dashboards" },
+	{ id: "cleanup", title: "Clean Up" },
+];
+
+// What a resumed lesson would say has moved since it was last open (?demolab=resume)
+export const DEMO_LAB_DRIFT = [
+	"Docker was running when you left this lesson. Its daemon is not answering now, so anything you started with it has stopped.",
+	"Your kubectl context was `orbstack` during this lesson and is `prod-eu-1` now.",
+];
+
+// What the app itself would say about this machine before the lesson starts
+export const DEMO_LAB_WARNINGS = [
+	"Your kubectl points at `prod-eu-1`, which does not look like a cluster on this Mac. Switch context before any step that touches Kubernetes.",
+	"The Azure CLI (az) is logged in to Hydda Production. Anything this lesson creates there is real, and may bill.",
+];
+
+// What a failed check leaves on the card it checked, for ?demolab
+export const DEMO_LAB_CHECK = {
+	command: "curl -s http://localhost:3000/api/health",
+	output:
+		"curl: (7) Failed to connect to localhost port 3000: Connection refused",
+	note: "Grafana is not listening on port 3000; the container is not running.",
+};
+
+export const DEMO_LAB_CARDS: Card[] = [
+	{
+		type: "step",
+		conceptId: "setup",
+		title: "What we will build",
+		body: "We will run Grafana in one container on this Mac, connect it to a data source, and build a dashboard that updates while you watch it. Everything stays local.",
+		requirements: [
+			{
+				name: "Docker Desktop",
+				kind: "install",
+				detail: "Free for personal use",
+				cost: "free",
+			},
+			{ name: "Disk space", kind: "disk", detail: "About 1 GB of images" },
+			{ name: "Time", kind: "time", detail: "About 45 minutes" },
+		],
+		notes: { sectionPath: ["Setup"] },
+	},
+	{
+		type: "step",
+		conceptId: "setup",
+		title: "Start Grafana in a container",
+		body: "Grafana ships as a container image, so there is nothing to install on the Mac itself.\n\n`-d` runs it in the background, and `-p 3000:3000` connects the container's port 3000 to the same port on this machine.",
+		task: {
+			kind: "run",
+			command: "docker run -d -p 3000:3000 --name=grafana grafana/grafana-oss",
+			expect:
+				"Docker prints a long container id and returns you to the prompt.",
+		},
+		notes: { sectionPath: ["Setup"] },
+	},
+	{
+		type: "step",
+		conceptId: "orientation",
+		title: "Open Grafana in the browser",
+		body: "Grafana serves its whole interface over HTTP. The first sign-in asks you to replace the default password, which is the one thing to do before anything else.",
+		task: {
+			kind: "ui",
+			command: "http://localhost:3000",
+			expect: "A sign-in page. The first login is admin / admin.",
+			verify: {
+				argv: ["curl", "-s", "http://localhost:3000/api/health"],
+				expect: 'JSON with "database": "ok" in it.',
+			},
+		},
+		takeaway:
+			"Grafana is a web app in a container — nothing is installed on the Mac.",
+		notes: { sectionPath: ["What's Running"] },
+	},
+	{
+		type: "step",
+		conceptId: "cleanup",
+		title: "Stop and remove the container",
+		body: "Removing the container removes the dashboards with it. That is the point of a lab: it leaves nothing behind.",
+		caution:
+			"Run `docker ps` first. This removes the container named `grafana` — check that it is the one you started here.",
+		cost: "Free, and stays free. Nothing in this lesson bills; a hosted Grafana Cloud instance would start at around $9/month.",
+		task: {
+			kind: "run",
+			command: "docker rm -f grafana",
+			expect:
+				"Docker prints the name back, and `docker ps` no longer lists it.",
+		},
+		notes: { sectionPath: ["Clean Up"] },
+	},
+	{
+		type: "recap",
+		title: "What you built",
+		body: "You ran Grafana in a container, signed in, connected a data source, and built a dashboard over it — all on this Mac, and all removable in one command.",
+		suggestions: [
+			"Grafana alerting, hands-on",
+			"Prometheus as a data source, hands-on",
+		],
+	},
+];

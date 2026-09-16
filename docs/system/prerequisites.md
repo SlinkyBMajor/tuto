@@ -20,16 +20,18 @@ Two halves, in `prompts/tutor.md` ("Starting further back" and "A lesson that le
 
 **Groundwork is always a topic lesson.** That is in the type: only the `topic` variant of `LessonConfig` has a `goal`. A prerequisite is general knowledge by definition — even for a codebase lesson, where the prerequisite is the *technology* the project uses and not another part of the project (see `prompts/modes/codebase.md`). The goal carries the project instead, so a codebase question answered with a detour through general knowledge lands back in the code.
 
+**A lab lesson never offers one.** The way back is `startLesson(goal.topic, {from: goal.project})`, which reconstructs a topic or codebase lesson — a lab lesson has nothing in `LessonGoal` to rebuild it from, so taking the offer would quietly drop the hands-on part the learner asked for. `prompts/modes/lab.md` forbids the offer, `App.tsx` does not render one for a lab lesson, and `smoke:lab` fails if one arrives. Restoring it would mean teaching `LessonGoal` the mode it is coming back to.
+
 ## Leading somewhere
 
 A lesson with a goal behaves differently, and the config is what makes that survive a resume — nothing depends on the tutor remembering.
 
 - **It skips the level question.** Asking for the groundwork already said where the learner is starting from, so `openingMessage` states it ("I am starting from scratch on X itself") and the tutor plans straight away. It also names the destination, which visibly shapes the outline: a Kubernetes lesson taken as groundwork for operators ends on *Controllers* and *Extending the API*.
-- **The sidebar shows the destination for the whole lesson** ("on the way to X"), not only at the end. A detour is easy to mistake for having lost the thread.
+- **The top bar shows the destination for the whole lesson** ("on the way to X"), beside the progress pill, not only at the end. A detour is easy to mistake for having lost the thread, so it stays on screen rather than behind the click that opens the lesson panel — which repeats it, for when the pill is all that is on show.
 - **The recap card carries the way back**, built from the config rather than from anything the tutor wrote, so it is there whether or not the recap remembered to mention it. The prompt tells the tutor *not* to list the destination under `suggestions`, since the app already shows it — the suggestions are for other directions.
 
 ## Checking it
 
 `pnpm smoke:prerequisite` runs three first turns: a subject built on another one (must offer), a subject that is its own ground (must not), and a groundwork lesson (must skip the level question, plan an outline, and not offer a prerequisite of its own — never a chain). The subjects are deliberately not the ones the prompt uses as examples; a test the prompt can answer by quoting itself measures nothing.
 
-`?demo` carries an offer on the fixture question card. `?demogoal` pretends the demo lesson was taken as groundwork, so the sidebar line and the recap's way back can be seen without walking the path.
+`?demo` carries an offer on the fixture question card. `?demogoal` pretends the demo lesson was taken as groundwork, so the destination line and the recap's way back can be seen without walking the path.

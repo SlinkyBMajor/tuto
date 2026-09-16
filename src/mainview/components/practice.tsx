@@ -67,7 +67,7 @@ export function PracticePanel({
 
 	return (
 		<div className="space-y-4 pb-24">
-			{/* The pane header already titles this view, so this row only carries
+			{/* The selected tab already titles this view, so this row only carries
 			    what it doesn't say. */}
 			<div className="flex items-baseline justify-between gap-4 px-1 pb-1">
 				<p className="text-sm text-muted-foreground">

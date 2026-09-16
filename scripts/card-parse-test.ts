@@ -2,6 +2,8 @@
 // tolerant parsing (parseReply escaping raw control chars) and last-resort
 // salvage (salvageCard pulling title/body from an unparseable reply). Run with:
 // pnpm run test:parse
+
+import { ALL_CARD_FEATURES } from "../src/bun/card-features";
 import { parseReply, salvageCard } from "../src/bun/claude";
 
 let failures = 0;
@@ -97,6 +99,27 @@ function testInnerQuote() {
 	check("unescaped quote salvages a card", salvaged !== undefined);
 	check("unescaped quote salvages the title", salvaged?.title === "Quoting");
 	check("salvaged card defaults to step", salvaged?.type === "step");
+}
+
+// The costliest shape of the unescaped-quote failure, and one a real lesson
+// produced: the quote is inside a task's command, so the whole reply is
+// unparseable and salvage returns a card whose body still talks about a command
+// that is no longer attached to it. The learner reads "this command" and is
+// shown nothing to type. Pinned here because the blast radius is the point —
+// salvage is doing what it was built to do, and the card is still unusable, so
+// the fix belongs in whatever made the model emit the quote.
+function testQuoteInTaskCommand() {
+	const reply = `{"card":{"type":"step","title":"Write the Dockerfile","body":"This command writes the file.","task":{"kind":"edit","command":"CMD ["echo", "hi"]","expect":"Two lines."}}}`;
+	expectThrows("a quote inside a task command fails parseReply", () =>
+		parseReply(reply),
+	);
+	const salvaged = salvageCard(reply);
+	check("it still salvages a card", salvaged !== undefined);
+	check(
+		"the body survives, still referring to the command",
+		salvaged?.body.includes("This command") ?? false,
+	);
+	check("and the task is gone with it", salvaged?.task === undefined);
 }
 
 // A truncated reply (no closing brace) — parseReply can't, salvage keeps the
@@ -218,6 +241,202 @@ function testHierarchy() {
 	);
 }
 
+// The lab fields. A task is what the learner does, so a "run" task with nothing
+// to type is worse than no task at all — the card would say "run this" and show
+// no command — and an unknown kind would render a step the app cannot label.
+function testTask() {
+	const withTask = `{"card":{"type":"step","title":"Start Grafana","body":"b","task":{"kind":"run","command":"docker run -d -p 3000:3000 grafana/grafana-oss","expect":"Docker prints a container id."}}}`;
+	const task = parseReply(withTask).card.task;
+	check("a run task parses", task?.kind === "run");
+	check(
+		"a run task keeps its command",
+		task?.command?.startsWith("docker run") ?? false,
+	);
+	check(
+		"a run task keeps what success looks like",
+		task?.expect === "Docker prints a container id.",
+	);
+
+	const uiTask = `{"card":{"type":"step","title":"Add a data source","body":"b","task":{"kind":"ui","expect":"The data source page shows a green tick."}}}`;
+	check(
+		"a ui task needs no command",
+		parseReply(uiTask).card.task?.kind === "ui",
+	);
+
+	const noCommand = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","expect":"Something happens."}}}`;
+	check(
+		"a run task with nothing to type is dropped",
+		parseReply(noCommand).card.task === undefined,
+	);
+
+	const badKind = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"think","command":"ls"}}}`;
+	check(
+		"a task of an unknown kind is dropped",
+		parseReply(badKind).card.task === undefined,
+	);
+
+	const noExpect = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"docker ps"}}}`;
+	const bare = parseReply(noExpect).card.task;
+	check(
+		"a task without an expectation still runs",
+		bare?.command === "docker ps",
+	);
+	check("...and simply has none to draw", bare?.expect === undefined);
+
+	const noTask = `{"card":{"type":"step","title":"T","body":"b"}}`;
+	check(
+		"a teaching card has no task",
+		parseReply(noTask).card.task === undefined,
+	);
+}
+
+// A check the app is unwilling to run must vanish at parse time, so the card
+// falls back to the learner saying how it went. It must never reach the webview
+// and never become a question about whether to permit it.
+function testVerify() {
+	const good = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"docker run -d --name=grafana grafana/grafana-oss","expect":"An id.","verify":{"argv":["docker","ps","--filter","name=grafana"],"expect":"One line starting with Up."}}}}`;
+	const verify = parseReply(good).card.task?.verify;
+	check("an allowed check parses", verify?.argv[0] === "docker");
+	check(
+		"it keeps what the output should show",
+		verify?.expect?.startsWith("One line") ?? false,
+	);
+
+	const mutating = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y","verify":{"argv":["docker","rm","-f","grafana"],"expect":"gone"}}}}`;
+	const dropped = parseReply(mutating).card.task;
+	check("a mutating check is dropped", dropped?.verify === undefined);
+	check("...and the task itself survives", dropped?.command === "x");
+
+	const shell = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y","verify":{"argv":["bash","-c","docker ps"],"expect":"z"}}}}`;
+	check(
+		"a shell is dropped",
+		parseReply(shell).card.task?.verify === undefined,
+	);
+
+	const remote = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y","verify":{"argv":["curl","-s","https://example.com"],"expect":"z"}}}}`;
+	check(
+		"a request to another host is dropped",
+		parseReply(remote).card.task?.verify === undefined,
+	);
+
+	const shellString = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y","verify":{"argv":"docker ps | grep grafana","expect":"z"}}}}`;
+	check(
+		"a command line rather than an argv array is dropped",
+		parseReply(shellString).card.task?.verify === undefined,
+	);
+
+	const noExpect = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y","verify":{"argv":["docker","ps"]}}}}`;
+	check(
+		"a check with nothing to judge it against is dropped",
+		parseReply(noExpect).card.task?.verify === undefined,
+	);
+
+	const plain = `{"card":{"type":"step","title":"T","body":"b","task":{"kind":"run","command":"x","expect":"y"}}}`;
+	check(
+		"a task without a check simply has none",
+		parseReply(plain).card.task?.verify === undefined,
+	);
+}
+
+// Caution and cost are single lines the app draws as panels of their own, on
+// the same terms as a takeaway: usable text or nothing at all.
+function testCautionAndCost() {
+	const both = `{"card":{"type":"step","title":"T","body":"b","caution":"Check your kubectl context first.","cost":"Free. The cluster bills ~$0.10/hour if left running."}}`;
+	const card = parseReply(both).card;
+	check("caution parses", card.caution === "Check your kubectl context first.");
+	check("cost parses", card.cost?.startsWith("Free.") ?? false);
+
+	const blank = `{"card":{"type":"step","title":"T","body":"b","caution":"  ","cost":42}}`;
+	const empty = parseReply(blank).card;
+	check("a whitespace-only caution is dropped", empty.caution === undefined);
+	check("a non-string cost is dropped", empty.cost === undefined);
+}
+
+// The requirements checklist is read before the lesson starts, so a row the app
+// cannot draw an icon for is dropped rather than rendered blank.
+function testRequirements() {
+	const plan = `{"card":{"type":"step","title":"What we will build","body":"b","requirements":[{"name":"Docker Desktop","kind":"install","detail":"Free for personal use","cost":"free"},{"name":"Time","kind":"time","detail":"About 45 minutes"}]}}`;
+	const rows = parseReply(plan).card.requirements;
+	check("requirements parse", rows?.length === 2);
+	check("a requirement keeps its kind", rows?.[0]?.kind === "install");
+	check("a requirement keeps its cost badge", rows?.[0]?.cost === "free");
+	check("a requirement without a cost has none", rows?.[1]?.cost === undefined);
+
+	const junk = `{"card":{"type":"step","title":"T","body":"b","requirements":[{"name":"A","kind":"install"},{"name":"B","kind":"vibes"},{"kind":"time"}]}}`;
+	check(
+		"a requirement of an unknown kind is dropped",
+		parseReply(junk).card.requirements?.length === 1,
+	);
+
+	const notAList = `{"card":{"type":"step","title":"T","body":"b","requirements":"Docker"}}`;
+	check(
+		"requirements that are not a list are dropped",
+		parseReply(notAList).card.requirements === undefined,
+	);
+
+	const allJunk = `{"card":{"type":"step","title":"T","body":"b","requirements":[{"name":"B","kind":"vibes"}]}}`;
+	check(
+		"a checklist with nothing drawable in it is dropped",
+		parseReply(allJunk).card.requirements === undefined,
+	);
+}
+
+// A mode says what a card of its lessons may carry (LessonModeSpec.cardFeatures).
+// The prompt asks for exactly those, and the parser drops the rest — so a mode
+// cannot render a panel it disabled, however the model replies.
+function testCardFeatures() {
+	const everything = `{"card":{"type":"step","title":"T","body":"b","takeaway":"One line worth keeping.","hierarchy":{"levels":[{"name":"A","depth":0},{"name":"B","depth":1}]},"caution":"Check first.","cost":"Free.","requirements":[{"name":"Time","kind":"time"}]}}`;
+
+	const all = parseReply(everything, ALL_CARD_FEATURES).card;
+	check(
+		"with every feature on, every panel survives",
+		Boolean(
+			all.takeaway &&
+				all.hierarchy &&
+				all.caution &&
+				all.cost &&
+				all.requirements,
+		),
+	);
+
+	const spare = parseReply(everything, ["takeaway"]).card;
+	check("a mode with only takeaway keeps it", spare.takeaway !== undefined);
+	check("...and loses the hierarchy", spare.hierarchy === undefined);
+	check("...and the caution", spare.caution === undefined);
+	check("...and the cost", spare.cost === undefined);
+	check("...and the requirements", spare.requirements === undefined);
+
+	const none = parseReply(everything, []).card;
+	check(
+		"a mode with no features keeps the card itself",
+		none.title === "T" && none.body === "b",
+	);
+	check(
+		"...and none of the panels",
+		none.takeaway === undefined &&
+			none.hierarchy === undefined &&
+			none.caution === undefined &&
+			none.cost === undefined &&
+			none.requirements === undefined,
+	);
+
+	// A diagram is markdown inside the body, not a field: turning the feature
+	// off stops the prompt asking for one, and never mutilates a body that has
+	// one anyway.
+	const withDiagram = `{"card":{"type":"step","title":"T","body":"before\n\n\`\`\`mermaid\nflowchart LR\n  A --> B\n\`\`\`\n\nafter"}}`;
+	check(
+		"a body keeps its diagram even with the feature off",
+		parseReply(withDiagram, []).card.body.includes("mermaid"),
+	);
+
+	// The default is everything, so a caller with no lesson in hand (this file)
+	// sees the whole protocol.
+	check(
+		"the default is every feature",
+		parseReply(everything).card.takeaway !== undefined,
+	);
+}
+
 // A reply with no card at all yields no salvage.
 function testProseOnly() {
 	check(
@@ -232,10 +451,16 @@ testExtrasSurvive();
 testRawTab();
 testFenced();
 testInnerQuote();
+testQuoteInTaskCommand();
 testTruncated();
 testTakeaway();
 testPrerequisite();
 testHierarchy();
+testTask();
+testVerify();
+testCardFeatures();
+testCautionAndCost();
+testRequirements();
 testProseOnly();
 
 if (failures > 0) {

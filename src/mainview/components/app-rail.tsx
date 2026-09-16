@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 // The app's global navigation. Tuto has one destination — the lesson library —
 // so the rail stays deliberately short; everything else is scoped to the
-// lesson and lives in the sidebar or the content tabs.
+// lesson and lives in the progress pill beside it or the content tabs.
 export function AppRail({
 	active,
 	onHome,

@@ -1,8 +1,8 @@
 # Takeaways
 
-The one line worth keeping from a card, shown under it as a small accented panel and filed into the notes. Optional and deliberately rare: the panel earns its prominence by not appearing on every card.
+The one line worth keeping from a card, shown under it as a small accented panel. Optional and deliberately rare: the panel earns its prominence by not appearing on every card.
 
-Spread across `prompts/tutor.md` (when one exists and what it may say), `Card.takeaway` in `src/shared/types.ts`, `parseReply`/`salvageCard` in `src/bun/claude.ts`, `notesEntry` in `src/bun/index.ts`, `TakeawayNote` in `src/mainview/App.tsx`, and the `takeaway` block of `index.css`.
+Spread across `prompts/features/takeaway.md` (when one exists and what it may say — a card feature, see `card-features.md`), `Card.takeaway` in `src/shared/types.ts`, `parseReply`/`salvageCard` in `src/bun/claude.ts`, `TakeawayNote` in `src/mainview/App.tsx`, and the `takeaway` block of `index.css`.
 
 ## Where one comes from
 
@@ -14,17 +14,17 @@ Nothing enforces the frequency in code, and nothing can: each turn is independen
 
 ## How it travels
 
-- **Parsed** by `parseTakeaway` — a non-empty string or nothing. Anything else is dropped rather than rendered as an empty panel.
-- **Salvaged.** Unlike the structured extras (notes routing, exercise, outline), a takeaway is a plain string on the card, so `salvageCard` pulls it out of an unparseable reply the same tolerant way it pulls the title and body. A salvaged card keeps its takeaway on screen but still files nothing into the notes — it has no section path to file under.
+- **Parsed** by `parseLine` — a non-empty string or nothing. Anything else is dropped rather than rendered as an empty panel. Lab mode's `caution` and `cost` are single lines on the same terms, so they share it.
+- **Salvaged.** Unlike the structured extras (exercise, outline), a takeaway is a plain string on the card, so `salvageCard` pulls it out of an unparseable reply the same tolerant way it pulls the title and body.
 - **Persisted for free.** It is a field on `Card`, and the feed's saved items carry whole cards (`SavedFeedItem`), so nothing in `store.ts` had to change. Lessons saved before takeaways existed simply have none.
-- **Into the notes.** `notesEntry` appends it under the card's body as a pull quote — `> **Key takeaway** — …` — which the notes panel already styles with a marker left border. Card references are flattened on the way in, like the body's.
+- **Into the notes, when the notes are on.** `notesEntry` appends it under the card's body as a pull quote — `> **Key takeaway** — …`. Dormant today: see `NOTES_ENABLED` in `src/bun/lesson-modes.ts`.
 - **Into exercise material.** `lessonMaterial` includes it with the card bodies it sends to `regenerateExercise`, so a replacement exercise may fairly blank a term the card only spelled out in the takeaway.
 
 ## How it renders
 
 `TakeawayNote` draws a panel under the card: a yellow surface with a yellow edge, the label "Key takeaway" with a bulb icon, and the sentence at body size in a heavier weight.
 
-**Yellow, and the only yellow in the app.** It is deliberately not the marker: the marker means *here is where you are* — the reading position, the blank to fill, the term you selected — and a takeaway is not a position, it is a keepsake. The four `--highlight-*` tokens are picked per theme rather than mixed from one value, because a yellow saturated enough to fill a panel with is far too light to read as text, and on a dark card the roles swap entirely. Markdown is rendered with a bare `<Markdown>` and `stripCardRefs`, not `CardMarkdown` — it is one sentence that may carry a name in backticks, and it has no fences, diagrams, or links to resolve.
+**Yellow, and the only yellow in the app.** It is deliberately not the marker: the marker means *here is where you are* — the reading position, the blank to fill, the term you selected — and a takeaway is not a position, it is a keepsake. It is also why a lab lesson's caution panel is red rather than amber: a warning that can be mistaken for a keepsake is not a warning (see `lab-mode.md`). The four `--highlight-*` tokens are picked per theme rather than mixed from one value, because a yellow saturated enough to fill a panel with is far too light to read as text, and on a dark card the roles swap entirely. Markdown is rendered with a bare `<Markdown>` and `stripCardRefs`, not `CardMarkdown` — it is one sentence that may carry a name in backticks, and it has no fences, diagrams, or links to resolve.
 
 **A feed item is now a wrapper, not a card.** `data-item-id` moved from the `<UICard>` onto a `<div>` holding the card and its takeaway, because every section coordinate in the app is (item id, section index) — the reading position, the dimming rules in `index.css`, a sticky note's anchor. The click that puts the reading position on a section moved to that wrapper for the same reason. Hover tracking for the add-a-note button stayed on the card itself, so the button never appears beside the takeaway.
 

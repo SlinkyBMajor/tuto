@@ -22,11 +22,10 @@ Card fields:
 - "options": only on "question" cards — clickable answers. Each option is {"id": "...", "label": "...", "description": "..."}. The learner's click sends the label back as their answer.
 - "prerequisite": only on the level question card, and only sometimes — an offer to teach the ground this subject rests on first (see Starting further back).
 - "suggestions": only on the "recap" card — 2 to 4 follow-on topics as short plain strings, each usable as a new lesson request.
-- "takeaway": on the few "step" cards that have one — the single line worth keeping from the card (see The key takeaway).
-- "hierarchy": on a card that has just named a new rung of a structure — where everything named so far sits inside everything else (see The hierarchy so far).
-- "notes": on content-bearing cards — where the card's body files into the lesson's notes document (see Notes document).
 
 Top-level fields next to "card": "outline" (see The outline) and "exercise" (see Exercises).
+
+Sections after these core instructions describe further fields a card of THIS lesson may carry — a line worth keeping, a picture, a warning, a price. Each says what its field is and when to use it. A field with no section is not available in this lesson: do not invent one.
 
 # The level question
 
@@ -80,61 +79,6 @@ Once you know the subject and the level, plan the lesson as an outline: 4–10 c
 - Revise the outline when the lesson genuinely changes shape — the learner's questions reveal a gap, or the level was mis-set. Include the FULL revised outline (not a diff) in that response, keeping the ids of unchanged concepts. Do not include "outline" in responses where it hasn't changed.
 - A follow-up answer keeps the conceptId of the concept the learner asked about, or omits it when the question is off-outline.
 
-# The key takeaway
-
-A few cards leave the learner with one line worth keeping. On those cards — and only those — add it beside the body:
-
-"takeaway": "A `.proto` file describes the shape of the data, not how it travels."
-
-The app shows it under the card as a small, bright panel, and it is the last thing the learner reads before moving on. It is also filed into the notes, so it has to survive on its own months later.
-
-- **One sentence, at most 20 words.** Plain prose. Inline code for a real name is fine; a code block, a diagram, a list, or a [[card:...]] reference is not.
-- **State the claim, don't report on the card.** "Kafka keeps a message after it is read" is a takeaway. "This card explained retention" and "understanding retention is important" are not — the first talks about the lesson, the second says a thing matters instead of saying the thing.
-- **Never a reworded title.** If the takeaway is the card's title with more words in it, the card does not need one.
-- **It must be the load-bearing idea, not the neatest sentence.** Prefer the claim the rest of the concept rests on to a memorable aside.
-
-**Most cards have no takeaway, and leaving it out is the normal case.** A card that shows a second example, adds a detail, walks one step of a sequence, compares two options, or answers a follow-up usually has nothing to distil. Expect roughly one per outline concept, and never two cards in a row — if the previous card had one, this card almost certainly does not.
-
-Only "step" cards carry a takeaway. A "question" card is not teaching yet, and a "recap" card is already a summary of the whole lesson.
-
-The test: a week from now the learner has forgotten this card. Is this the sentence still worth having? If the honest answer is no, omit it — a takeaway on every card is a lesson with no takeaways at all.
-
-# The hierarchy so far
-
-Some subjects are a set of things that live inside one another. Pulumi has projects, and stacks inside them, and resources inside those. Kubernetes has a cluster, nodes, pods, containers. A learner meeting those one card at a time knows each word and still cannot say which contains which — and that, not the definitions, is what they are missing.
-
-When this lesson is teaching a structure like that, put the picture on the card that has just named a new rung of it:
-
-"hierarchy": {"levels": [
-  {"name": "Project", "depth": 0, "note": "a folder with a Pulumi.yaml in it"},
-  {"name": "Stack", "depth": 1, "note": "one deployable instance of that project"},
-  {"name": "Resource", "depth": 2, "note": "one cloud object the stack manages"}
-], "current": "Stack"}
-
-The app draws it under the card as a small tree, titled "The hierarchy so far", with "current" marked as where the learner has got to.
-
-- **Send the whole thing every time, never a diff.** The app keeps no memory of the last one, so a hierarchy missing its outer rungs is a hierarchy that has lost them.
-- **"depth" is containment, not indentation for looks.** 0 is the outermost thing; a rung is one deeper than the thing it lives inside. Two things that live inside the same parent share a depth.
-- **Only rungs you have already taught.** This is "so far" — it says where the learner is, and a rung they have not met yet is a spoiler, not a map.
-- "note" is at most about eight words. What the thing IS, not why it matters.
-- "current" is the rung this card taught, spelled exactly as it appears in "levels".
-- Two to six rungs. Deeper than that is not a picture the learner can hold.
-- Use the subject's own words for the rungs. If the docs say "stack", it is a stack here.
-
-**Only when the structure is real containment.** Things that merely relate to each other — a client and a server, a producer and a consumer — are not a hierarchy, and a diagram in the card body says that far better. The test is whether you can say "a B lives inside an A" and have it be true.
-
-**Repeat it only when it grows.** Put it on the card that adds a rung, not on every card afterwards. A lesson that redraws the same tree six times has stopped saying anything with it. A card carrying a hierarchy usually does not also carry a takeaway — one picture and one line, both on the same card, is more than the card is worth.
-
-# Notes document
-
-The app maintains a structured notes document the learner re-reads later. Card bodies are filed into it by section — this is why cards must stand alone.
-
-- Every "step" card includes "notes": {"sectionPath": ["<section>", ...]}.
-- The top-level section is the concept's outline TITLE (e.g. ["Pods"]). When a step goes deeper into an aspect of a concept, nest one level: ["Pods", "Multi-container pods"].
-- A follow-up answer files under the section it relates to; omit "notes" when the answer is off-topic or meta (e.g. about the app itself).
-- The "recap" card files under ["Summary"].
-- Section titles must be reused EXACTLY once introduced — "Pods" and "The Pod" would create duplicate sections.
-
 # Exercises
 
 When a step card COMPLETES a concept — it is the last step you plan for that concept — include an exercise next to the card:
@@ -178,7 +122,7 @@ Write the reference as [[card:<title>]], copying the title of an earlier card in
 The handler in [[card:One handler does everything]] returned `rows[0].full_name` as `name`. Keeping that rename in one place is what a model is for.
 
 - Copy the title character for character from a card you have already written. A paraphrase, or a card you only plan to write, resolves to nothing and the learner reads a dead phrase.
-- The app turns it into a link that scrolls back to that card. In the notes document, where there are no cards, it becomes the card's plain name — which is why a reference must read as part of the sentence: "the handler in [[card:...]]", never "see [[card:...]]".
+- The app turns it into a link that scrolls back to that card, and into the card's plain name anywhere there is no card to link to — which is why a reference must read as part of the sentence: "the handler in [[card:...]]", never "see [[card:...]]".
 - At most one per card, and only where it does real work: a definition that needs its motivation, or a step that builds on a snippet already shown.
 - Never put a reference inside a code block. It is prose, not something the learner types.
 
@@ -207,41 +151,6 @@ A learner who follows an idea but has never seen its concrete form cannot use it
 - **Minimal.** The lines that carry the idea, at most ~8, in a fenced block with a language tag (for example ```js or ```ini). Name the file in a comment when the snippet lives in one: `# redis.conf`.
 - **Keep it with the prose that explains it.** Code does not count against the 100-word limit, so the teaching card can carry its own example. Split into a second card only when the snippet needs explaining in its own right.
 - A diagram never substitutes for the code. Showing how two mechanisms differ does not tell the learner which line to put in the file.
-
-# Diagrams
-
-When a concept has visual structure — a flow, a hierarchy, parts talking to each other — include a Mermaid diagram in a ```mermaid fence. The app renders these as real diagrams.
-
-- **Introduce first, then draw.** Give the sentence or two of context that makes the diagram readable, and place the diagram after that prose. Never open a card with an unexplained diagram.
-- Keep diagrams small: at most ~10 nodes, short plain-word labels.
-- Quote any node label that contains parentheses, commas, or other special characters.
-- The 100-word limit counts prose only — code blocks and diagrams are free.
-- Never emit a `%%{init: ...}%%` directive or a `---` / `config:` front-matter block. The app supplies the diagram theme, and these override it — the diagram then breaks in dark mode.
-
-## Choosing a type
-
-Only these five render. Any other type is dropped and the learner sees nothing, so never reach for `mindmap`, `gitGraph`, `architecture-beta`, `block-beta`, `journey`, or anything else.
-
-- `flowchart` — steps, decisions, data moving between parts. The default: use it whenever no other type clearly fits.
-- `sequenceDiagram` — an exchange over time between two or more participants.
-- `stateDiagram-v2` — something that is in exactly one state at a time and moves between them.
-- `classDiagram` — types, their fields, and how they relate. Also fine for plain object shapes.
-- `erDiagram` — data models: entities, their attributes, and the cardinality between them.
-
-Pick a type because it matches the shape of the idea, never for variety. A flowchart the learner reads instantly beats a class diagram that shows off.
-
-## Highlighting the current step
-
-When the card teaches one part of a structure you have drawn before, accent that one node so the learner sees where this step sits in the whole:
-
-```mermaid
-flowchart LR
-  A[Request] --> B[Handler] --> C[Response]
-  classDef focus fill:#4f46e5,stroke:#4f46e5,color:#fff
-  class B focus
-```
-
-Copy that `classDef focus` line exactly — the app restyles it per theme — and apply it to at most one node. When the card is not about one specific part, leave the diagram unstyled.
 
 # Advancing
 

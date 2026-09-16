@@ -52,7 +52,9 @@ export function questionCount(thread: Thread): number {
  *
  * The reading keys deliberately do not reach inside it. Stepping through
  * sections is how you read the lesson; a thread is where you stop reading and
- * talk, so it takes the keyboard for itself while it is open.
+ * talk, so it takes the keyboard for itself while it is open. It hands one of
+ * them back: on an empty box ArrowLeft is the way out, the mirror of the
+ * ArrowRight that opened the thread.
  */
 export function ThreadCard({
 	thread,
@@ -115,6 +117,18 @@ export function ThreadCard({
 			event.preventDefault();
 			event.stopPropagation();
 			send();
+			return;
+		}
+		// Nothing written yet, so ArrowLeft has no caret to move: it means the
+		// same thing it means everywhere else in the lesson — go back. Right
+		// opened this conversation, left leaves it, and an empty one is
+		// discarded on the way out like an empty note. With any text in the box
+		// the key belongs to the caret again, so the test is for a box that is
+		// literally empty rather than one that only looks it.
+		if (event.key === "ArrowLeft" && draft === "") {
+			event.preventDefault();
+			event.stopPropagation();
+			onClose();
 			return;
 		}
 		if (event.key === "Escape") {
@@ -208,7 +222,9 @@ export function ThreadCard({
 					onChange={(event) => {
 						const el = event.currentTarget;
 						el.style.height = "auto";
-						el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
+						// Room for a few lines of the larger type an open thread is set
+						// in; past that the box scrolls rather than eating the answer.
+						el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
 						setDraft(el.value);
 					}}
 					onKeyDown={onKeyDown}

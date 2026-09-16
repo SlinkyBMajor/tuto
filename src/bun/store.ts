@@ -9,6 +9,7 @@ import type {
 	LessonSnapshot,
 	LessonSummary,
 } from "../shared/types";
+import type { MachineProbe } from "./env-probe";
 import { lessonDir, lessonsDir } from "./paths";
 
 function recordPath(id: string): string {
@@ -32,7 +33,7 @@ export function configOf(record: LessonRecord): LessonConfig {
 // existing record so it reflects when the lesson was first started.
 export async function saveLesson(
 	snapshot: LessonSnapshot,
-	meta: { sessionId?: string; config?: LessonConfig },
+	meta: { sessionId?: string; config?: LessonConfig; probe?: MachineProbe },
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const existing = await loadLesson(snapshot.id);
@@ -43,6 +44,9 @@ export async function saveLesson(
 		// id would leave that lesson unable to resume its conversation.
 		sessionId: meta.sessionId ?? existing?.sessionId,
 		config: meta.config ?? existing?.config,
+		// What this machine looked like while the lesson was open, so a resume
+		// can say what has moved since — see probeDrift.
+		probe: meta.probe ?? existing?.probe,
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,
 	};

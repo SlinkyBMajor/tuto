@@ -1,4 +1,5 @@
 import {
+	Alert02Icon,
 	ArrowRight01Icon,
 	Award01Icon,
 	CompassIcon,
@@ -6,10 +7,10 @@ import {
 	Idea01Icon,
 	MessageQuestionIcon,
 	Plant01Icon,
+	PlusSignCircleIcon,
 	RefreshIcon,
 	RocketIcon,
 	SentIcon,
-	SidebarLeft01Icon,
 	Stairs01Icon,
 	StickyNote01Icon,
 	Tick02Icon,
@@ -31,22 +32,33 @@ import { ExplainSelection } from "@/components/explain";
 import { HierarchyNote } from "@/components/hierarchy";
 import { LessonLibrary } from "@/components/home";
 import {
+	CautionNote,
+	ChecksConsent,
+	CostNote,
+	MachineNotice,
+	RequirementsPanel,
+	type TaskCheck,
+	TaskPanel,
+	TeardownNotice,
+} from "@/components/lab-panels";
+import {
 	LessonPlanning,
 	type PlanningStage,
 	PlanningWash,
 } from "@/components/lesson-planning";
-import { LessonSidebar } from "@/components/lesson-sidebar";
+import { LessonProgress } from "@/components/lesson-progress";
 import { MarginLayer } from "@/components/margin-layer";
-import { NotesPanel } from "@/components/notes";
+// Notes are switched off — see NOTES_ENABLED in src/bun/lesson-modes.ts.
+// import { NotesPanel } from "@/components/notes";
 import { type PracticeItem, PracticePanel } from "@/components/practice";
-import { ProjectField } from "@/components/project-picker";
+import { LabField, ProjectField, shortPath } from "@/components/project-picker";
 import {
 	newThreadId,
 	questionCount,
 	type Thread,
 	ThreadCard,
 } from "@/components/question-threads";
-import { loadSettings } from "@/components/settings";
+import { loadSettings, pushSettings } from "@/components/settings";
 import {
 	asStickyColor,
 	newStickyId,
@@ -69,8 +81,13 @@ import {
 	DEMO_ACTIVITY,
 	DEMO_CARDS,
 	DEMO_EXERCISES,
+	DEMO_LAB_CARDS,
+	DEMO_LAB_CHECK,
+	DEMO_LAB_DRIFT,
+	DEMO_LAB_OUTLINE,
+	DEMO_LAB_TOPIC,
+	DEMO_LAB_WARNINGS,
 	DEMO_LESSONS,
-	DEMO_NOTES,
 	DEMO_OUTLINE,
 	DEMO_PROJECT,
 	DEMO_THREADS,
@@ -83,6 +100,8 @@ import { cardRefSlug, stripCardRefs } from "../shared/card-refs";
 import type {
 	Card,
 	CardOption,
+	CardTask,
+	FeedNotification,
 	LessonConfig,
 	LessonGoal,
 	LessonSnapshot,
@@ -93,16 +112,23 @@ import type {
 	SavedPracticeItem,
 	SavedSticky,
 	SavedThread,
+	TaskStatus,
 	TurnResult,
+	VerifyResult,
 } from "../shared/types";
 
 const params = new URLSearchParams(window.location.search);
 const demoMode = params.has("demo");
+// ?demolab renders a hands-on lesson from fixtures: the plan card's
+// requirements, a task card, and the caution/cost pair — plus the app-authored
+// notice a machine pointed at something real would open with. ?demolab=ask
+// renders it before the learner has said whether the app may run checks.
+const demoLab = params.has("demolab");
 // ?demohome renders the home screen with fixture lessons for UI verification
 const homeDemoMode = params.has("demohome");
 // ?demoproject pretends a project was picked, so the project chip and the
-// sidebar's project line can be seen without a real folder (and without the
-// OS dialog, which only exists inside the app shell)
+// lesson panel's project line can be seen without a real folder (and without
+// the OS dialog, which only exists inside the app shell)
 const demoProject = params.has("demoproject") ? DEMO_PROJECT : null;
 // ?demoplanning[=level] holds the planning screen open. Add &demoproject for
 // the codebase version, which is the one with lookups to show.
@@ -116,15 +142,17 @@ const demoPlanning: PlanningStage | null = params.has("demoplanning")
 const demoTopic = demoProject
 	? "how identity and org-scoped tokens work"
 	: DEMO_TOPIC;
-// ?demogoal pretends this lesson was taken as groundwork, so the sidebar's
-// destination line and the recap's way back can be seen without walking the
-// whole prerequisite path
+// ?demogoal pretends this lesson was taken as groundwork, so the destination
+// line beside the pill and the recap's way back can be seen without walking
+// the whole prerequisite path
 const demoGoal: LessonGoal | undefined = params.has("demogoal")
 	? { topic: "Event-driven architecture" }
 	: undefined;
-const demoLessonConfig: LessonConfig = demoProject
-	? { mode: "codebase", topic: demoTopic, project: demoProject }
-	: { mode: "topic", topic: demoTopic, goal: demoGoal };
+const demoLessonConfig: LessonConfig = demoLab
+	? { mode: "lab", topic: DEMO_LAB_TOPIC }
+	: demoProject
+		? { mode: "codebase", topic: demoTopic, project: demoProject }
+		: { mode: "topic", topic: demoTopic, goal: demoGoal };
 
 const OPTION_ICONS: Record<string, IconSvgElement> = {
 	beginner: Plant01Icon,
@@ -148,10 +176,25 @@ interface TurnOptions {
 
 interface FeedItem {
 	id: number;
-	kind: "card" | "user" | "error";
+	// Two of these are the app's own voice rather than the tutor's. "notice" is
+	// the structured panel about this machine, re-derived from a fresh probe on
+	// every resume and never persisted. "notification" is one line about the
+	// lesson's own state — a practice item added, a folder made — which
+	// happened once and is saved with the lesson.
+	kind: "card" | "user" | "error" | "notice" | "notification";
 	card?: Card;
 	text?: string;
 	selectedOption?: string;
+	// Notice items only: the app-authored warnings, and — on a resumed lesson —
+	// what has changed on this machine since it was last open
+	notice?: { warnings: string[]; drift: string[] };
+	// Notification items only
+	notification?: FeedNotification;
+	// Task cards only: how far the learner got with the step. Persisted, so a
+	// lesson resumed tomorrow does not present ten finished steps as open ones.
+	taskStatus?: TaskStatus;
+	// The last check this card's task ran, and its verdict
+	check?: TaskCheck;
 	// Set on the card that answered a follow-up, so it labels itself as one
 	followUp?: boolean;
 	// Error items only: replay the turn that produced this panel. Takes the
@@ -250,25 +293,71 @@ function sectionTextOf(itemId: number, index: number): string {
 }
 
 export default function App() {
-	const [items, setItems] = useState<FeedItem[]>(() =>
-		demoMode
-			? DEMO_CARDS.map((card) => ({
+	const [items, setItems] = useState<FeedItem[]>(() => {
+		if (demoLab) {
+			return [
+				{
+					id: nextId++,
+					kind: "notice" as const,
+					notice: {
+						warnings: DEMO_LAB_WARNINGS,
+						drift: params.get("demolab") === "resume" ? DEMO_LAB_DRIFT : [],
+					},
+				},
+				...DEMO_LAB_CARDS.map((card, index) => ({
 					id: nextId++,
 					kind: "card" as const,
 					card,
-				}))
-			: [],
-	);
+					// One step verified and one failed, so every state of the task
+					// panel is on screen at once: done, checked, and disagreed with.
+					taskStatus:
+						index === 1
+							? ("verified" as const)
+							: index === 2
+								? ("failed" as const)
+								: undefined,
+					check: index === 2 ? DEMO_LAB_CHECK : undefined,
+				})),
+			];
+		}
+		if (demoMode) {
+			return [
+				...DEMO_CARDS.slice(0, 2).map((card) => ({
+					id: nextId++,
+					kind: "card" as const,
+					card,
+				})),
+				{
+					id: nextId++,
+					kind: "notification" as const,
+					notification: {
+						text: "New exercise in Practice — Consuming messages",
+						action: "practice" as const,
+					},
+				},
+				...DEMO_CARDS.slice(2).map((card) => ({
+					id: nextId++,
+					kind: "card" as const,
+					card,
+				})),
+			];
+		}
+		return [];
+	});
 	const [loading, setLoading] = useState(false);
 	const [started, setStarted] = useState(
-		demoMode || params.has("demostream") || demoPlanning !== null,
+		demoMode || demoLab || params.has("demostream") || demoPlanning !== null,
 	);
 	const [input, setInput] = useState("");
 	const [outline, setOutline] = useState<OutlineItem[] | null>(
-		demoMode ? DEMO_OUTLINE : null,
+		demoLab ? DEMO_LAB_OUTLINE : demoMode ? DEMO_OUTLINE : null,
 	);
 	const [currentConceptId, setCurrentConceptId] = useState<string | null>(
-		demoMode ? (DEMO_OUTLINE[1]?.id ?? null) : null,
+		demoLab
+			? (DEMO_LAB_OUTLINE[0]?.id ?? null)
+			: demoMode
+				? (DEMO_OUTLINE[1]?.id ?? null)
+				: null,
 	);
 	const [tab, setTab] = useState("lesson");
 	const [practice, setPractice] = useState<PracticeItem[]>(() =>
@@ -283,19 +372,33 @@ export default function App() {
 	// Persistence: the saved-lesson id (from the first turn or a resume) and
 	// the lesson topic, used to build the save snapshot.
 	const [lessonId, setLessonId] = useState<string | null>(null);
-	const [topic, setTopic] = useState(demoMode || demoPlanning ? demoTopic : "");
+	const [topic, setTopic] = useState(
+		demoLab ? DEMO_LAB_TOPIC : demoMode || demoPlanning ? demoTopic : "",
+	);
 	// How the open lesson was started. The bun process owns the authoritative
 	// copy; this one lets the UI label the lesson and carry the project over
 	// when a recap suggestion starts the next one.
 	const [lessonConfig, setLessonConfig] = useState<LessonConfig | null>(
-		demoMode || demoPlanning ? demoLessonConfig : null,
+		demoMode || demoLab || demoPlanning ? demoLessonConfig : null,
 	);
 	// The project chosen on the home screen, before a lesson exists
 	const [project, setProject] = useState<ProjectRef | null>(demoProject);
+	// Whether the app may run this lesson's read-only checks. Undefined until
+	// the learner is asked, which happens on the plan card and again on the
+	// first step that actually has one. Persisted with the lesson.
+	const [checksAllowed, setChecksAllowed] = useState<boolean | undefined>(
+		// ?demolab renders a lesson that already allowed checks; ?demolab=ask
+		// renders the moment it is asked for
+		demoLab && params.get("demolab") !== "ask" ? true : undefined,
+	);
+	// The feed item whose check is running, so its panel can say so
+	const [checking, setChecking] = useState<number | null>(null);
+	// The home screen's other choice: teach this by having me build it. Mutually
+	// exclusive with a project — a lab lesson has no repository to read, and
+	// picking either one clears the other.
+	const [labChosen, setLabChosen] = useState(false);
 	// Bumped when returning home so the lesson library re-fetches
 	const [homeRefresh, setHomeRefresh] = useState(0);
-	// The lesson panel can be folded away to widen the reading column
-	const [sidebarOpen, setSidebarOpen] = useState(true);
 	// A requested jump to a concept's first card. The nonce makes repeat
 	// selections of the same concept distinct so the effect re-runs.
 	const [conceptJump, setConceptJump] = useState<{
@@ -355,9 +458,13 @@ export default function App() {
 		id: string;
 		section: string;
 	} | null>(null);
-	// After the recap, the composer for a follow-up question — the only place in
-	// a lesson that still takes free text into the lesson itself
-	const [followUpOpen, setFollowUpOpen] = useState(false);
+	// The two moments a lesson still takes free text: a follow-up question after
+	// the recap, and a lab step that did not go the way the card said it would.
+	// One slot rather than two flags — the composer is one box, and only ever
+	// open for one reason.
+	const [composer, setComposer] = useState<
+		{ kind: "follow-up" } | { kind: "trouble"; itemId: number } | null
+	>(null);
 	// The section under the pointer. Only which one — where its action rail is
 	// drawn changes with every mouse move and is written to the DOM instead, the
 	// same way the reading highlight and the margin's positions are: a re-render
@@ -486,6 +593,8 @@ export default function App() {
 			topic,
 			outline,
 			currentConceptId,
+			// A consent given once holds for the lesson, including after a resume
+			checksAllowed,
 			stickies: stickies.flatMap((sticky): SavedSticky[] => {
 				const cardIndex = cardIds.indexOf(sticky.itemId);
 				if (cardIndex < 0 || !sticky.text.trim()) return [];
@@ -514,15 +623,32 @@ export default function App() {
 					},
 				];
 			}),
+			// Only what the lesson itself said. An error panel is transient, and
+			// the machine notice is the app's own voice about a machine that may
+			// have changed by the time this lesson is opened again — it is
+			// re-derived from a fresh probe on resume, never restored from disk.
 			feed: items
-				.filter((item) => item.kind !== "error")
+				.filter(
+					(item) =>
+						item.kind === "card" ||
+						item.kind === "user" ||
+						item.kind === "notification",
+				)
 				.map(
 					(item): SavedFeedItem => ({
-						kind: item.kind === "user" ? "user" : "card",
+						kind:
+							item.kind === "user"
+								? "user"
+								: item.kind === "notification"
+									? "notification"
+									: "card",
 						card: item.card,
 						text: item.text,
+						notification: item.notification,
 						selectedOption: item.selectedOption,
 						followUp: item.followUp,
+						taskStatus: item.taskStatus,
+						check: item.check,
 					}),
 				),
 			practice: practice.map(
@@ -549,7 +675,23 @@ export default function App() {
 		practice,
 		stickies,
 		threads,
+		checksAllowed,
 	]);
+
+	// The bun process spawns the CLI, makes the documentation call a lab lesson
+	// opens with, and creates its folder — but Settings live in this side's
+	// localStorage. So hand them over once the bridge exists, and again
+	// whenever they are edited (see settings.tsx). Until this lands, the bun
+	// side runs on its own defaults, which are the same ones.
+	useEffect(() => {
+		const settings = loadSettings();
+		pushSettings({
+			context7Key: settings.context7Key,
+			labRoot: settings.labRoot,
+			model: settings.model,
+			effort: settings.effort,
+		});
+	}, []);
 
 	// Receive streaming card previews from the bun process. Ignore any that
 	// arrive outside a live turn so a stale delta can't reappear after the
@@ -627,6 +769,22 @@ export default function App() {
 					{ kind: "card", card: result.card, followUp: options.followUp },
 					options,
 				);
+				// The app's own voice, under the card that caused it. Practice used
+				// to fill up silently behind a tab badge, and a folder appeared on
+				// disk with only the tutor to mention it.
+				if (exercise) {
+					notify(
+						`New exercise in Practice${
+							conceptTitle(exercise.conceptId)
+								? ` — ${conceptTitle(exercise.conceptId)}`
+								: ""
+						}`,
+						"practice",
+					);
+				}
+				if (result.labDir) {
+					notify(`This lesson's files go in ${shortPath(result.labDir)}`);
+				}
 			} else {
 				append({
 					kind: "error",
@@ -669,27 +827,38 @@ export default function App() {
 	// as groundwork for a subject the learner is coming back to.
 	function startLesson(
 		topicArg?: string,
-		options: { from?: ProjectRef | null; goal?: LessonGoal } = {},
+		options: {
+			from?: ProjectRef | null;
+			goal?: LessonGoal;
+			// Hands-on. Left out means the home screen's choice, the same way
+			// `from` means the project picked there.
+			lab?: boolean;
+		} = {},
 	) {
 		const nextTopic = (topicArg ?? input).trim();
 		if (!nextTopic || loading) return;
 		const chosen = options.from === undefined ? project : options.from;
+		const lab = options.lab ?? labChosen;
 		const language = loadSettings().codeLanguage.trim() || undefined;
 		// Groundwork is general knowledge by definition, so a lesson with a goal
 		// never reads a project. The lesson it leads back to may well — that
 		// project travels in the goal, not here.
 		const config: LessonConfig = options.goal
 			? { mode: "topic", topic: nextTopic, language, goal: options.goal }
-			: chosen
-				? { mode: "codebase", topic: nextTopic, language, project: chosen }
-				: { mode: "topic", topic: nextTopic, language };
+			: lab
+				? { mode: "lab", topic: nextTopic }
+				: chosen
+					? { mode: "codebase", topic: nextTopic, language, project: chosen }
+					: { mode: "topic", topic: nextTopic, language };
 		// Fully reset so a new lesson never inherits the previous one's state
 		setItems([]);
 		setPractice([]);
 		setStickies([]);
 		setThreads([]);
 		setOpenThread(null);
-		setFollowUpOpen(false);
+		setComposer(null);
+		setChecksAllowed(undefined);
+		setChecking(null);
 		setOutline(null);
 		setCurrentConceptId(null);
 		setHighlight(null);
@@ -700,7 +869,25 @@ export default function App() {
 		setTab("lesson");
 		setStarted(true);
 		append({ kind: "user", text: nextTopic });
+		// The machine notice comes from the app, not the tutor, so it does not
+		// wait on the turn — it lands seconds in, while the lesson is still
+		// being planned, which is the whole point of it.
+		if (config.mode === "lab") void showMachineNotice();
 		void runTurn(() => bun.startLesson({ config }));
+	}
+
+	// What the app found on this Mac, in its own voice, before the lesson says
+	// anything. Only ever warnings: a machine with nothing to warn about gets no
+	// panel, and a probe that fails gets none either — this is a heads-up, and
+	// it never becomes an error of its own.
+	async function showMachineNotice() {
+		const result = await bun.probeMachine({}).catch(() => null);
+		if (result?.warnings.length) {
+			append({
+				kind: "notice",
+				notice: { warnings: result.warnings, drift: [] },
+			});
+		}
 	}
 
 	// Take the groundwork first. The lesson being left has exactly one card in
@@ -770,7 +957,9 @@ export default function App() {
 			}),
 		);
 		setOpenThread(null);
-		setFollowUpOpen(false);
+		setComposer(null);
+		setChecksAllowed(record.checksAllowed);
+		setChecking(null);
 		setOutline(record.outline);
 		setCurrentConceptId(record.currentConceptId);
 		setLessonId(record.id);
@@ -782,6 +971,26 @@ export default function App() {
 		setInput("");
 		setTab("lesson");
 		setStarted(true);
+		// A lab lesson is re-checked against the machine it is coming back to,
+		// not against the machine it left: the work cluster may have become the
+		// current context since, and the warning has to be true today. It goes
+		// to the top of the feed, above the lesson it applies to.
+		if (record.config?.mode === "lab") {
+			void bun
+				.probeMachine({})
+				.then((result) => {
+					if (!result.warnings.length && !result.drift.length) return;
+					setItems((prev) => [
+						{
+							id: nextId++,
+							kind: "notice",
+							notice: { warnings: result.warnings, drift: result.drift },
+						},
+						...prev,
+					]);
+				})
+				.catch(() => {});
+		}
 	}
 
 	function goHome() {
@@ -789,22 +998,167 @@ export default function App() {
 		setHomeRefresh((n) => n + 1);
 	}
 
-	// The one place free text still reaches the lesson itself: a follow-up after
-	// the recap. Its answer lands in the feed as an ordinary card, marked as a
-	// follow-up so a lesson re-read later still shows which cards came from the
-	// outline and which came from a question.
-	function askFollowUp() {
+	// Free text reaching the lesson itself, from either of the two places that
+	// still open a box: a follow-up after the recap, and a lab step that did not
+	// do what the card said. The learner's own words go into the feed either
+	// way; what the tutor receives says which of the two this was, since a
+	// pasted error means nothing without "that step failed" in front of it.
+	function sendComposer() {
 		const text = input.trim();
-		if (!text || loading) return;
+		const open = composer;
+		if (!text || !open || loading) return;
 		setInput("");
-		setFollowUpOpen(false);
+		setComposer(null);
 		append({ kind: "user", text });
+		if (open.kind === "trouble") {
+			setItems((prev) =>
+				prev.map((item) =>
+					item.id === open.itemId ? { ...item, taskStatus: "failed" } : item,
+				),
+			);
+			void runTurn(() =>
+				bun.sendMessage({
+					text: `That step did not work. Here is what happened:\n\n${text}`,
+				}),
+			);
+			return;
+		}
 		void runTurn(() => bun.sendMessage({ text }), { followUp: true });
+	}
+
+	// One line from the app, in the feed, about something it just did. Appended
+	// after the card that caused it, so the feed reads in the order things
+	// happened.
+	function notify(text: string, action?: FeedNotification["action"]) {
+		append({ kind: "notification", notification: { text, action } });
 	}
 
 	function continueLesson(options: { highlightNew?: boolean } = {}) {
 		if (loading) return;
 		void runTurn(() => bun.continueLesson({}), { ...options, pinTop: true });
+	}
+
+	// The learner says the step is done. Their word for it and nothing else —
+	// the app ran no command and checked no output, and it must not imply that
+	// it did (see docs/adr/0001-the-learner-executes-the-app-only-verifies.md).
+	// Sent as a message rather than a plain "continue" so the lesson's own
+	// session records that the step happened.
+	function confirmTask(
+		itemId: number,
+		options: { highlightNew?: boolean } = {},
+	) {
+		if (loading) return;
+		setItems((prev) =>
+			prev.map((item) =>
+				item.id === itemId ? { ...item, taskStatus: "done" } : item,
+			),
+		);
+		// A verified step says so, and says what the check saw: the session then
+		// knows the outcome without anybody spending a turn to tell it.
+		const item = items.find((entry) => entry.id === itemId);
+		const passed = item?.taskStatus === "verified" && item.check;
+		void runTurn(
+			() =>
+				bun.sendMessage({
+					text: passed
+						? `I did that step and the check passed: ${passed.note} Continue.`
+						: "I did that step, and it did what you said it would. Continue.",
+				}),
+			{ ...options, pinTop: true },
+		);
+	}
+
+	// A failed check already holds everything a diagnosis needs — the command,
+	// the output, the verdict — so the learner is not asked to paste what the
+	// app is already holding. This is where the mode earns its keep.
+	function askAboutFailure(itemId: number) {
+		if (loading) return;
+		const item = items.find((entry) => entry.id === itemId);
+		const check = item?.check;
+		if (!check) return;
+		append({ kind: "user", text: "That did not work — what now?" });
+		void runTurn(() =>
+			bun.sendMessage({
+				text: `That step did not work. The app ran \`${check.command}\` and it printed:\n\n${check.output || "(nothing at all)"}\n\n${check.note}`,
+			}),
+		);
+	}
+
+	// Run this card's check. The app spawns the command itself — the only thing
+	// it ever runs on the learner's behalf, read-only and allowlisted before it
+	// was even offered (src/bun/verify.ts). A pass marks the step verified,
+	// which is a stronger claim than "I did it" and is the one case where the
+	// app, not the learner, says the step worked.
+	async function runCheck(itemId: number, task: CardTask) {
+		const verify = task.verify;
+		if (!verify || checking !== null || loading) return;
+		setChecking(itemId);
+		const result = await bun
+			.runVerify({ verify, taskExpect: task.expect })
+			.catch(
+				(error): VerifyResult => ({
+					ok: false,
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
+		setChecking(null);
+		setItems((prev) =>
+			prev.map((item) => {
+				if (item.id !== itemId) return item;
+				// A check that could not run is not a step that failed. The card
+				// stays where it was and the learner still has "I did it".
+				if (!result.ok) {
+					return {
+						...item,
+						check: {
+							command: verify.argv.join(" "),
+							output: "",
+							note: "The check could not be run — say how it went yourself.",
+						},
+					};
+				}
+				return {
+					...item,
+					taskStatus: result.pass ? "verified" : "failed",
+					check: {
+						command: result.command,
+						output: result.output,
+						note: result.note,
+					},
+				};
+			}),
+		);
+	}
+
+	// The card at the end of the feed, when it is still waiting on the learner
+	// to do something. It is the only card that can be acted on: everything
+	// above it has already been answered or moved past.
+	function openTaskItem(): FeedItem | undefined {
+		const last = items.findLast((item) => item.kind === "card");
+		if (!last?.card?.task) return undefined;
+		// A step the learner said they did, or that the app checked, is finished:
+		// the bar goes back to Continue. "failed" is not finished — that is the
+		// one the lesson has to hear about.
+		return last.taskStatus === "done" || last.taskStatus === "verified"
+			? undefined
+			: last;
+	}
+
+	// What the primary action means on the card in front of the learner: on a
+	// task card it is "I did it", everywhere else it is Continue. One function,
+	// so the button and the ArrowDown key can never disagree.
+	function advanceLesson(options: { highlightNew?: boolean } = {}) {
+		if (loading) return;
+		const pending = openTaskItem();
+		if (!pending) {
+			continueLesson(options);
+			return;
+		}
+		// A failed check makes the primary action "ask the tutor", not "I did
+		// it": the step demonstrably did not work, and saying it did would teach
+		// the next card on a false footing.
+		if (pending.taskStatus === "failed") askAboutFailure(pending.id);
+		else confirmTask(pending.id, options);
 	}
 
 	function chooseOption(itemId: number, option: CardOption) {
@@ -934,8 +1288,16 @@ export default function App() {
 		const thread = threads.find((item) => item.id === threadId);
 		if (!thread) return;
 		const history = thread.messages;
-		const card = items.find((item) => item.id === thread.itemId)?.card;
-		const section = sectionTextOf(thread.itemId, thread.segmentIndex);
+		const item = items.find((entry) => entry.id === thread.itemId);
+		const card = item?.card;
+		// A question about a step the app checked should arrive with the check.
+		// The panel's own words are the command and what to expect; the output
+		// lives outside them (it would swamp a 1200-character section), so it is
+		// appended here, trimmed to the part somebody would actually read.
+		const check = item?.check;
+		const section = check
+			? `${sectionTextOf(thread.itemId, thread.segmentIndex)}\n\nThe app then ran \`${check.command}\`, which printed:\n${check.output.slice(0, 800) || "(nothing at all)"}\n\n${check.note}`
+			: sectionTextOf(thread.itemId, thread.segmentIndex);
 		setThreads((prev) =>
 			prev.map((item) =>
 				item.id === threadId
@@ -1107,6 +1469,12 @@ export default function App() {
 			// that reaches it — Escape included. A thread is where you stop
 			// reading, so the reading keys must not reach inside one.
 			if (target?.closest("[data-sticky], [data-thread]")) return;
+			// A panel opened over the feed — the lesson panel, settings — owns the
+			// keys while it is up, Escape included: reading on under it would
+			// scroll the lesson away behind the thing you opened. The check is on
+			// the popup existing rather than on focus, because a popover opened by
+			// pointer can leave focus on its trigger out here in the chrome.
+			if (document.querySelector("[data-slot=popover-content]")) return;
 			if (event.key === "Escape") {
 				setHighlight(null);
 				return;
@@ -1190,7 +1558,7 @@ export default function App() {
 				current.card?.type !== "recap" &&
 				!(current.card?.type === "question" && !current.selectedOption)
 			) {
-				continueLesson({ highlightNew: true });
+				advanceLesson({ highlightNew: true });
 			}
 		}
 		window.addEventListener("keydown", onKeyDown);
@@ -1226,7 +1594,9 @@ export default function App() {
 						<p className="text-lg text-muted-foreground">
 							{project
 								? `What do you want to understand about ${project.name}?`
-								: "What would you like to learn?"}
+								: labChosen
+									? "What would you like to build?"
+									: "What would you like to learn?"}
 						</p>
 					</div>
 					<div className="relative flex w-full max-w-xl flex-col gap-3.5">
@@ -1244,7 +1614,9 @@ export default function App() {
 								placeholder={
 									project
 										? "e.g. how identity and org-scoped tokens work"
-										: "e.g. Kubernetes, from the basics"
+										: labChosen
+											? "e.g. Grafana, running on this Mac"
+											: "e.g. Kubernetes, from the basics"
 								}
 								className="h-15 rounded-3xl border-border bg-card pr-28 pl-5 text-lg shadow-md"
 								{...RAW_TEXT_INPUT}
@@ -1257,7 +1629,17 @@ export default function App() {
 								Start
 							</Button>
 						</form>
-						<ProjectField project={project} onChange={setProject} />
+						{/* Where the lesson comes from: a project to read, or a thing
+						    to build. One or the other — a lab has no repository, so
+						    choosing either hides the other. */}
+						<div className="flex flex-wrap items-center justify-center gap-2">
+							{!labChosen && (
+								<ProjectField project={project} onChange={setProject} />
+							)}
+							{!project && (
+								<LabField chosen={labChosen} onChange={setLabChosen} />
+							)}
+						</div>
 					</div>
 					<LessonLibrary
 						onResume={resumeLesson}
@@ -1276,9 +1658,39 @@ export default function App() {
 	// answers land after it as ordinary cards, and the lesson does not become
 	// unfinished again because one of them did.
 	const lessonEnded = items.some((item) => item.card?.type === "recap");
+	// The step the learner is standing in front of, when there is one. Drives
+	// the bar at the bottom and the ArrowDown key alike.
+	const pendingTask = openTaskItem();
+	// How many steps this lesson has handed out, and how many the learner says
+	// they have done. Left off entirely when no card has a task, so the progress
+	// pill grows a third figure only in the mode that has one.
+	// Steps that were handed out and never marked done. Only meaningful once the
+	// lesson has ended, which is the one place it is used.
+	const unfinishedSteps = items
+		.filter(
+			(item) =>
+				item.card?.task &&
+				item.taskStatus !== "done" &&
+				item.taskStatus !== "verified",
+		)
+		.map((item) => ({
+			title: item.card?.title ?? "",
+			command: item.card?.task?.command,
+		}));
+	const taskItems = items.filter((item) => item.card?.task);
+	const stepStats =
+		taskItems.length > 0
+			? {
+					stepsTotal: taskItems.length,
+					stepsDone: taskItems.filter(
+						(item) =>
+							item.taskStatus === "done" || item.taskStatus === "verified",
+					).length,
+				}
+			: {};
 	// The subject this lesson is groundwork for, when it is one. Read off the
 	// config rather than remembered by the tutor, so it survives a resume and
-	// says the same thing on the recap card as it does in the sidebar.
+	// says the same thing on the recap card as it does in the top bar.
 	const goal = lessonConfig?.mode === "topic" ? lessonConfig.goal : undefined;
 
 	// Setting a lesson up is the longest wait in the app, and until the outline
@@ -1340,7 +1752,7 @@ export default function App() {
 			.join("\n\n");
 	}
 
-	// The sidebar's outline is navigation: selecting a concept jumps the feed
+	// The panel's outline is navigation: selecting a concept jumps the feed
 	// to the first card that taught it. Both updates land in one commit, so
 	// the panel is mounted by the time the jump effect runs.
 	function goToConcept(conceptId: string) {
@@ -1357,26 +1769,6 @@ export default function App() {
 			.filter((id): id is string => Boolean(id)),
 	);
 
-	// The content pane is titled by what it is showing, with the lesson's
-	// position above it — the topic itself lives in the sidebar.
-	const paneTitle =
-		tab === "practice"
-			? "Practice"
-			: tab === "notes"
-				? "Notes"
-				: (outline?.[currentIndex]?.title ?? topic ?? "Lesson");
-	// The kicker sits above the title and must never repeat it. On the lesson
-	// tab the title is already the topic until an outline exists, so the kicker
-	// says where in the lesson we are instead.
-	const paneKicker =
-		tab !== "lesson"
-			? topic || "Lesson"
-			: outline
-				? currentIndex >= 0
-					? `Concept ${currentIndex + 1} of ${outline.length}`
-					: "Lesson"
-				: "New lesson";
-
 	return (
 		<Tabs
 			value={tab}
@@ -1385,76 +1777,65 @@ export default function App() {
 		>
 			<ExplainSelection topic={topic} />
 			<AppRail active="lesson" onHome={goHome} />
-			{sidebarOpen && (
-				<LessonSidebar
-					topic={topic}
-					project={
-						lessonConfig?.mode === "codebase" ? lessonConfig.project : undefined
-					}
-					goal={goal}
-					outline={outline}
-					currentIndex={currentIndex}
-					lessonEnded={lessonEnded}
-					feedConcepts={feedConcepts}
-					stats={{
-						cards: items.filter((item) => item.kind === "card").length,
-						practiceDone: practice.length - openExercises,
-						practiceTotal: practice.length,
-					}}
-					onSelectConcept={goToConcept}
-					onCollapse={() => setSidebarOpen(false)}
-				/>
-			)}
 			{/* What is pinned beside the lesson decides the whole pane's geometry,
 			    not just the feed's — so it is declared here, above the header, the
-			    feed and the key bar alike. */}
+			    feed and the key bar alike. A thread being OPEN is a state of its
+			    own, ahead of the other three: talking is not reading, so the
+			    lesson steps further aside and dims for as long as it lasts. */}
 			<main
 				className="lesson-shell flex min-w-0 flex-1 flex-col"
 				data-margin={
-					threads.length > 0
-						? "threads"
-						: stickies.length > 0
-							? "notes"
-							: undefined
+					openThread
+						? "thread-open"
+						: threads.length > 0
+							? "threads"
+							: stickies.length > 0
+								? "notes"
+								: undefined
 				}
 			>
-				{/* Title and tabs share one row: the tabs sitting beside the title
-				    rather than under it gives the feed back a band of height. */}
-				<header className="shrink-0 border-b border-border/70 bg-background">
-					<div className={cn(COLUMN, "flex items-center gap-6 py-4")}>
-						{!sidebarOpen && (
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								className="size-9 shrink-0 rounded-xl text-muted-foreground"
-								aria-label="Show lesson panel"
-								onClick={() => setSidebarOpen(true)}
-							>
-								<HugeiconsIcon icon={SidebarLeft01Icon} className="size-5" />
-							</Button>
-						)}
-						<div className="min-w-0 flex-1">
-							<p className="truncate text-sm text-muted-foreground tabular-nums">
-								{paneKicker}
-							</p>
-							<h1 className="truncate text-[1.7rem] leading-tight font-[560] tracking-[-0.024em]">
-								{paneTitle}
-							</h1>
-						</div>
-						<TabsList className="shrink-0">
-							<TabsTrigger value="lesson">Lesson</TabsTrigger>
-							<TabsTrigger value="practice">
-								Practice
-								{openExercises > 0 && (
-									<Badge variant="default" size="sm">
-										{openExercises}
-									</Badge>
-								)}
-							</TabsTrigger>
-							<TabsTrigger value="notes">Notes</TabsTrigger>
-						</TabsList>
-					</div>
+				{/* The one row that does NOT carry the reading column. It is chrome,
+				    not content: the pill sits at the pane's left edge — where the
+				    panel it opens used to be docked — and the tabs at the right, so
+				    the column underneath is free to centre itself and its margin
+				    without dragging the window's furniture along. Where the tab you
+				    are on is said by the tab itself; no title repeats it. */}
+				<header className="flex shrink-0 items-center gap-4 border-b border-border/70 bg-background px-3 py-2">
+					<LessonProgress
+						topic={topic}
+						project={
+							lessonConfig?.mode === "codebase"
+								? lessonConfig.project
+								: undefined
+						}
+						goal={goal}
+						outline={outline}
+						currentIndex={currentIndex}
+						lessonEnded={lessonEnded}
+						feedConcepts={feedConcepts}
+						stats={{
+							cards: items.filter((item) => item.kind === "card").length,
+							practiceDone: practice.length - openExercises,
+							practiceTotal: practice.length,
+							...stepStats,
+						}}
+						onSelectConcept={goToConcept}
+					/>
+					<div className="flex-1" />
+					<TabsList className="shrink-0">
+						<TabsTrigger value="lesson">Lesson</TabsTrigger>
+						<TabsTrigger value="practice">
+							Practice
+							{openExercises > 0 && (
+								<Badge variant="default" size="sm">
+									{openExercises}
+								</Badge>
+							)}
+						</TabsTrigger>
+						{/* Notes are switched off — see NOTES_ENABLED in
+						    src/bun/lesson-modes.ts for what has to come back with it. */}
+						{/* <TabsTrigger value="notes">Notes</TabsTrigger> */}
+					</TabsList>
 				</header>
 
 				<div className="relative min-h-0 flex-1">
@@ -1474,9 +1855,9 @@ export default function App() {
 								lessonMaterial={lessonMaterial}
 							/>
 						</TabsContent>
-						<TabsContent value="notes" className={cn(COLUMN, "pt-6 text-base")}>
+						{/* <TabsContent value="notes" className={cn(COLUMN, "pt-6 text-base")}>
 							<NotesPanel demoMarkdown={demoMode ? DEMO_NOTES : undefined} />
-						</TabsContent>
+						</TabsContent> */}
 						<TabsContent
 							value="lesson"
 							className="reading-column feed-column px-8 pt-7 text-base"
@@ -1513,8 +1894,34 @@ export default function App() {
 									)
 								}
 							/>
-							<div ref={feedListRef} className="space-y-5 pb-10">
+							{/* The cards alone, named so an open thread can dim them. The
+							    margin is a sibling inside .feed-column, so dimming the
+							    column itself would dim the conversation with them. */}
+							<div ref={feedListRef} className="feed-list space-y-5 pb-10">
 								{items.map((item, index) => {
+									// The app's own voice, not the tutor's — see MachineNotice
+									if (item.kind === "notice") {
+										return (
+											<MachineNotice
+												key={item.id}
+												warnings={item.notice?.warnings ?? []}
+												drift={item.notice?.drift}
+											/>
+										);
+									}
+									if (item.kind === "notification" && item.notification) {
+										return (
+											<FeedNote
+												key={item.id}
+												notification={item.notification}
+												onOpen={
+													item.notification.action === "practice"
+														? () => setTab("practice")
+														: undefined
+												}
+											/>
+										);
+									}
 									if (item.kind === "user") {
 										return (
 											<p
@@ -1688,6 +2095,9 @@ export default function App() {
 																			lessonConfig?.mode === "codebase"
 																				? lessonConfig.project
 																				: null,
+																		// Following a suggestion should not
+																		// quietly stop being hands-on
+																		lab: lessonConfig?.mode === "lab",
 																	})
 																}
 																className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 text-left transition-all hover:border-foreground/15 hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
@@ -1787,10 +2197,48 @@ export default function App() {
 											{/* The structure first, then the line to keep: the map
 											    tells you where you are, the takeaway is what you
 											    leave with. */}
+											{/* What the lesson needs before it starts, on the card
+											    that plans it — while backing out is still free. */}
+											{card?.requirements && (
+												<RequirementsPanel requirements={card.requirements}>
+													{/* The lesson asks once, here, before any step has
+													    run — and again on the first step that actually
+													    has a check, in case this was skipped past. */}
+													{lessonConfig?.mode === "lab" &&
+														checksAllowed === undefined && (
+															<ChecksConsent onDecide={setChecksAllowed} />
+														)}
+												</RequirementsPanel>
+											)}
 											{card?.hierarchy && (
 												<HierarchyNote hierarchy={card.hierarchy} />
 											)}
 											{card?.takeaway && <TakeawayNote text={card.takeaway} />}
+											{/* Then the doing, in the order the learner needs it:
+											    check this, it costs this, now run it. The task is
+											    last on the card, directly above the button that
+											    says they did it. */}
+											{card?.caution && <CautionNote text={card.caution} />}
+											{card?.cost && <CostNote text={card.cost} />}
+											{/* On the recap of a lab lesson: what was started and
+											    never stopped, counted by the app rather than
+											    remembered by the tutor. */}
+											{isRecap && unfinishedSteps.length > 0 && (
+												<TeardownNotice steps={unfinishedSteps} />
+											)}
+											{card?.task && (
+												<TaskPanel
+													task={card.task}
+													status={item.taskStatus}
+													check={item.check}
+													checksAllowed={checksAllowed}
+													checking={checking === item.id}
+													onCheck={() =>
+														card.task && void runCheck(item.id, card.task)
+													}
+													onDecideChecks={setChecksAllowed}
+												/>
+											)}
 											{/* The two things you can hang off a section — the same
 											    pair ArrowRight and ArrowLeft do by keyboard. Out here
 											    with the takeaway rather than inside the card: the card
@@ -1878,19 +2326,28 @@ export default function App() {
 				    back only at the end, for follow-ups. */}
 				{tab === "lesson" && (
 					<div className="shrink-0 border-t border-border/70 bg-background py-3.5">
-						{followUpOpen ? (
+						{composer ? (
 							<form
 								className={cn(COLUMN, "flex gap-2.5")}
 								onSubmit={(event) => {
 									event.preventDefault();
-									askFollowUp();
+									sendComposer();
 								}}
 							>
 								<Input
 									autoFocus
 									value={input}
 									onChange={(event) => setInput(event.target.value)}
-									placeholder="What else would you like to know?"
+									// Escape is the way out of a box opened by mistake —
+									// without it a mis-click would hide Continue for good.
+									onKeyDown={(event) => {
+										if (event.key === "Escape") setComposer(null);
+									}}
+									placeholder={
+										composer.kind === "trouble"
+											? "What happened? Paste what your terminal printed."
+											: "What else would you like to know?"
+									}
 									{...RAW_TEXT_INPUT}
 									className="h-12 rounded-2xl border-border bg-card px-4 shadow-xs"
 									disabled={loading}
@@ -1900,7 +2357,7 @@ export default function App() {
 									className="h-12 shrink-0 gap-2 rounded-2xl px-5"
 									disabled={loading || !input.trim()}
 								>
-									Ask
+									{composer.kind === "trouble" ? "Send" : "Ask"}
 									<HugeiconsIcon icon={SentIcon} className="size-4.5" />
 								</Button>
 							</form>
@@ -1914,7 +2371,7 @@ export default function App() {
 											variant="outline"
 											className="h-12 shrink-0 gap-2 rounded-2xl px-5"
 											disabled={loading}
-											onClick={() => setFollowUpOpen(true)}
+											onClick={() => setComposer({ kind: "follow-up" })}
 										>
 											<HugeiconsIcon
 												icon={MessageQuestionIcon}
@@ -1929,6 +2386,67 @@ export default function App() {
 											onClick={goHome}
 										>
 											New lesson
+										</Button>
+									</>
+								) : pendingTask?.taskStatus === "failed" ? (
+									// The app already holds the command, the output and the
+									// verdict, so the tutor gets them without the learner
+									// retyping anything. The other answer is theirs: the check
+									// can be wrong, and a learner who can see it worked should
+									// not be held up by it.
+									<>
+										<Button
+											type="button"
+											variant="outline"
+											className="h-12 shrink-0 gap-2 rounded-2xl px-5"
+											disabled={loading}
+											onClick={() => confirmTask(pendingTask.id)}
+										>
+											Mark done anyway
+										</Button>
+										<Button
+											type="button"
+											className="h-12 shrink-0 gap-2.5 rounded-2xl pr-3 pl-5"
+											disabled={loading}
+											onClick={() => askAboutFailure(pendingTask.id)}
+										>
+											Ask the tutor
+											<kbd className="grid h-6 w-6 place-items-center rounded-lg bg-primary-foreground/15 text-xs">
+												↓
+											</kbd>
+										</Button>
+									</>
+								) : pendingTask ? (
+									// A task card asks for the learner's hands, so the bar
+									// asks how it went instead of offering Continue. Both
+									// answers move the lesson on; only one of them claims the
+									// step worked, and neither is the app checking anything.
+									<>
+										<Button
+											type="button"
+											variant="outline"
+											className="h-12 shrink-0 gap-2 rounded-2xl px-5"
+											disabled={loading}
+											onClick={() =>
+												setComposer({
+													kind: "trouble",
+													itemId: pendingTask.id,
+												})
+											}
+										>
+											<HugeiconsIcon icon={Alert02Icon} className="size-4.5" />
+											Something went wrong
+										</Button>
+										<Button
+											type="button"
+											className="h-12 shrink-0 gap-2.5 rounded-2xl pr-3 pl-5"
+											disabled={loading}
+											onClick={() => confirmTask(pendingTask.id)}
+										>
+											I did it
+											<kbd className="grid h-6 w-6 place-items-center rounded-lg bg-primary-foreground/15 text-xs">
+												↓
+											</kbd>
 										</Button>
 									</>
 								) : (
@@ -1950,6 +2468,46 @@ export default function App() {
 				)}
 			</main>
 		</Tabs>
+	);
+}
+
+// The app saying one thing in the feed. Deliberately not a card and not a
+// panel: it is a line of chrome in the reading column, so it reads as the app
+// speaking rather than as another thing to study. Clickable when what it is
+// about is somewhere to go.
+function FeedNote({
+	notification,
+	onOpen,
+}: {
+	notification: FeedNotification;
+	onOpen?: () => void;
+}) {
+	const content = (
+		<>
+			<HugeiconsIcon
+				icon={PlusSignCircleIcon}
+				className="size-3.5 shrink-0 text-marker"
+			/>
+			<span className="min-w-0 truncate">{notification.text}</span>
+			{onOpen && (
+				<HugeiconsIcon
+					icon={ArrowRight01Icon}
+					className="size-3.5 shrink-0 opacity-60"
+				/>
+			)}
+		</>
+	);
+	if (!onOpen) {
+		return <p className="feed-note">{content}</p>;
+	}
+	return (
+		<button
+			type="button"
+			className="feed-note feed-note--action"
+			onClick={onOpen}
+		>
+			{content}
+		</button>
 	);
 }
 

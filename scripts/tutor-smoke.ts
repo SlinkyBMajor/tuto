@@ -2,7 +2,12 @@
 // Run with: pnpm run smoke
 
 import { runTutorTurn } from "../src/bun/claude";
-import { openingMessage, runtimeFor } from "../src/bun/lesson-modes";
+import {
+	NOTES_ENABLED,
+	openingMessage,
+	openingRuntimeFor,
+	runtimeFor,
+} from "../src/bun/lesson-modes";
 import type { LessonConfig } from "../src/shared/types";
 import { longestSegment, takeawayProblem } from "./card-prose";
 
@@ -16,7 +21,8 @@ console.log("Turn 1: starting a lesson without stating a level…");
 const first = await runTutorTurn(
 	await openingMessage(config),
 	undefined,
-	runtime,
+	// The level question runs with no tools in every mode — see openingRuntimeFor
+	openingRuntimeFor(config),
 );
 console.log(JSON.stringify(first.card, null, 2));
 
@@ -51,13 +57,17 @@ if (!second.outline.some((item) => item.id === second.card.conceptId)) {
 	console.error("FAIL: step conceptId does not match any outline item");
 	process.exit(1);
 }
-if (!second.card.notes?.sectionPath?.length) {
+// Notes routing is only asked for when the notes document is switched on —
+// see NOTES_ENABLED in src/bun/lesson-modes.ts.
+if (NOTES_ENABLED && !second.card.notes?.sectionPath?.length) {
 	console.error("FAIL: expected the step card to carry notes routing");
 	process.exit(1);
 }
 console.log(
 	"notes sectionPath:",
-	JSON.stringify(second.card.notes.sectionPath),
+	NOTES_ENABLED
+		? JSON.stringify(second.card.notes?.sectionPath)
+		: "(notes are switched off)",
 );
 
 // The learner steps through a card one section at a time, so a section that

@@ -26,7 +26,9 @@ function sectionOf(itemId: number, segmentIndex: number): HTMLElement | null {
  * Each item wants to sit level with the section it belongs to, and two items on
  * neighbouring sections would then overlap — so this lays them out: sort by
  * where each one wants to be, then walk down, pushing any item that would
- * collide below the one before it. Positions are written straight to the DOM (a
+ * collide below the one before it. One thing outranks sitting level: an item
+ * may not hang off the end of the lesson, so anything that would is pulled up
+ * to finish where the feed finishes. Positions are written straight to the DOM (a
  * transform per item) rather than held in state, for the same reason the
  * reading highlight is: they are measurements of rendered content, and feeding
  * them back through React would re-render the feed on every observed resize.
@@ -62,8 +64,14 @@ export function MarginLayer<T extends MarginAnchor>({
 
 	const layout = useCallback(() => {
 		const layer = layerRef.current;
+		const feed = feedRef.current;
 		if (!layer) return;
 		const layerTop = layer.getBoundingClientRect().top;
+		// Where the lesson ends, in the layer's own coordinates. Nothing in the
+		// margin may hang past it.
+		const feedEnd = feed
+			? feed.getBoundingClientRect().bottom - layerTop
+			: Number.POSITIVE_INFINITY;
 		const placed = [];
 		for (const item of items) {
 			const el = itemEls.current.get(item.id);
@@ -77,10 +85,23 @@ export function MarginLayer<T extends MarginAnchor>({
 				continue;
 			}
 			el.style.visibility = "";
+			const height = el.offsetHeight;
+			// Level with its section, EXCEPT that it may not hang off the end of
+			// the lesson. An open thread on the last section of the last card is
+			// tall and its section is the lowest thing on screen, so sitting level
+			// with it would leave the conversation dangling below the feed with
+			// nothing beside it — and the pane cannot scroll to fix that, because
+			// there is nothing under the last card to scroll to. Pulling it up to
+			// finish where the lesson finishes puts it back alongside the card it
+			// belongs to. Above the end of the feed the term never binds, so
+			// everywhere else this is still "level with its section".
 			placed.push({
 				el,
-				want: anchor.getBoundingClientRect().top - layerTop,
-				height: el.offsetHeight,
+				want: Math.min(
+					anchor.getBoundingClientRect().top - layerTop,
+					Math.max(0, feedEnd - height),
+				),
+				height,
 			});
 		}
 		placed.sort((a, b) => a.want - b.want);
@@ -101,7 +122,7 @@ export function MarginLayer<T extends MarginAnchor>({
 			}
 			cursor = top + item.height + STACK_GAP;
 		}
-	}, [items]);
+	}, [items, feedRef]);
 
 	// Runs before paint so a new item never shows up at the top of the layer
 	// for a frame before finding its section.

@@ -11,6 +11,7 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import { bun } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "tuto.settings";
@@ -18,17 +19,45 @@ const STORAGE_KEY = "tuto.settings";
 const FONT_SIZES = ["default", "large", "xlarge"] as const;
 type FontSize = (typeof FONT_SIZES)[number];
 
+// What a lesson turn runs on. Mirrors MODELS and EFFORTS in src/bun/settings.ts,
+// which is the side that checks them before spawning anything — this list is
+// the menu, not the guard.
+const MODELS = [
+	{ id: "claude-opus-5", label: "Opus 5", note: "Best cards, dearest" },
+	{ id: "claude-sonnet-5", label: "Sonnet 5", note: "Cheaper, still teaches" },
+] as const;
+
+// The scale starts at high. Below it the model stops thinking rather than
+// thinking less, and a card written without thinking teaches two new terms in
+// two sentences — measured, see docs/system/claude-backend.md.
+const EFFORTS = ["high", "xhigh", "max"] as const;
+
 interface Settings {
 	serifFont: boolean;
 	fontSize: FontSize;
 	// Preferred language for code examples; empty = let the topic decide
 	codeLanguage: string;
+	// context7 API key for a lab lesson's documentation lookup; empty = keyless,
+	// which is how the endpoint works out of the box. A key only raises rate
+	// limits. See docs/system/lab-mode.md.
+	context7Key: string;
+	// Where a lab lesson creates its own folder, when it needs one
+	labRoot: string;
+	// The tier and the thinking depth for every turn of every lesson, whatever
+	// kind it is. Both go on the CLI command line the Bun process builds.
+	model: (typeof MODELS)[number]["id"];
+	effort: (typeof EFFORTS)[number];
 }
 
 const DEFAULT_SETTINGS: Settings = {
 	serifFont: false,
 	fontSize: "default",
 	codeLanguage: "",
+	context7Key: "",
+	labRoot: "~/Documents/Tuto Labs",
+	// Matches DEFAULT_MODEL / DEFAULT_EFFORT in src/bun/settings.ts
+	model: "claude-opus-5",
+	effort: "xhigh",
 };
 
 export function loadSettings(): Settings {
@@ -52,6 +81,20 @@ export function initSettings() {
 	applySettings(loadSettings());
 }
 
+// The settings the Bun process needs a copy of: it spawns the CLI, makes the
+// documentation call and creates the lesson folder, none of which the webview
+// does. Pushed on mount and on every edit rather than read from disk over
+// there, because Settings live in this side's localStorage — and none of them
+// may travel in a lesson's config, which is persisted.
+export function pushSettings(settings: {
+	context7Key: string;
+	labRoot: string;
+	model: string;
+	effort: string;
+}) {
+	void bun.setSettings(settings).catch(() => {});
+}
+
 export function SettingsButton() {
 	const [settings, setSettings] = useState<Settings>(loadSettings);
 
@@ -60,6 +103,14 @@ export function SettingsButton() {
 		setSettings(next);
 		localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
 		applySettings(next);
+		if (
+			partial.context7Key !== undefined ||
+			partial.labRoot !== undefined ||
+			partial.model !== undefined ||
+			partial.effort !== undefined
+		) {
+			pushSettings(next);
+		}
 	}
 
 	return (
@@ -137,6 +188,98 @@ export function SettingsButton() {
 						/>
 						<span className="text-xs text-muted-foreground">
 							Leave empty to let the topic decide.
+						</span>
+					</label>
+					<PopoverHeader>
+						<PopoverTitle className="text-sm text-muted-foreground">
+							Tutor
+						</PopoverTitle>
+					</PopoverHeader>
+					<div className="flex flex-col gap-1.5">
+						<span>Model</span>
+						<div className="flex gap-0.5 rounded-full bg-muted p-0.5">
+							{MODELS.map((model) => (
+								<button
+									key={model.id}
+									type="button"
+									aria-pressed={settings.model === model.id}
+									onClick={() => update({ model: model.id })}
+									className={cn(
+										"h-7 flex-1 rounded-full text-xs transition-colors",
+										settings.model === model.id
+											? "bg-card text-foreground shadow-xs"
+											: "text-muted-foreground hover:text-foreground",
+									)}
+								>
+									{model.label}
+								</button>
+							))}
+						</div>
+						<span className="text-xs text-muted-foreground">
+							{MODELS.find((model) => model.id === settings.model)?.note}. Every
+							turn of every lesson runs on this.
+						</span>
+					</div>
+					<div className="flex flex-col gap-1.5">
+						<span>Thinking</span>
+						<div className="flex gap-0.5 rounded-full bg-muted p-0.5">
+							{EFFORTS.map((effort) => (
+								<button
+									key={effort}
+									type="button"
+									aria-pressed={settings.effort === effort}
+									onClick={() => update({ effort })}
+									className={cn(
+										"h-7 flex-1 rounded-full text-xs transition-colors",
+										settings.effort === effort
+											? "bg-card text-foreground shadow-xs"
+											: "text-muted-foreground hover:text-foreground",
+									)}
+								>
+									{effort}
+								</button>
+							))}
+						</div>
+						<span className="text-xs text-muted-foreground">
+							How long the tutor thinks before it writes a card. More thinking
+							costs more and takes longer.
+						</span>
+					</div>
+					<PopoverHeader>
+						<PopoverTitle className="text-sm text-muted-foreground">
+							Hands-on lessons
+						</PopoverTitle>
+					</PopoverHeader>
+					<label
+						htmlFor="setting-context7-key"
+						className="flex flex-col gap-1.5"
+					>
+						<span>context7 API key</span>
+						<Input
+							id="setting-context7-key"
+							type="password"
+							value={settings.context7Key}
+							onChange={(event) => update({ context7Key: event.target.value })}
+							placeholder="ctx7sk-…"
+							className="h-9 rounded-xl border-border bg-card text-sm"
+						/>
+						<span className="text-xs text-muted-foreground">
+							Optional. A lab lesson looks the tool's current docs up either
+							way; a key only raises the rate limit.
+						</span>
+					</label>
+					<label htmlFor="setting-lab-root" className="flex flex-col gap-1.5">
+						<span>Lab folder</span>
+						<Input
+							id="setting-lab-root"
+							value={settings.labRoot}
+							onChange={(event) => update({ labRoot: event.target.value })}
+							placeholder="~/Documents/Tuto Labs"
+							className="h-9 rounded-xl border-border bg-card text-sm"
+						/>
+						<span className="text-xs text-muted-foreground">
+							Where a lesson puts files you write. One folder per lesson, and
+							only for lessons that need one.
 						</span>
 					</label>
 				</PopoverContent>
